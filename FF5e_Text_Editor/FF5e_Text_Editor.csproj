@@ -128,6 +128,10 @@
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
     </EmbeddedResource>
     <None Include="app.config" />
+    <None Include="Handbook\Default.tbl" />
+    <None Include="Handbook\Default1bpp.tbl" />
+    <None Include="Handbook\Default2bpp.tbl" />
+    <None Include="Handbook\readme.pdf" />
     <None Include="Properties\Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>
       <LastGenOutput>Settings.Designer.cs</LastGenOutput>
@@ -139,6 +143,15 @@
     </Compile>
   </ItemGroup>
   <ItemGroup>
+    <Content Include="Handbook\Pics\01.png" />
+    <Content Include="Handbook\Pics\01_1.png" />
+    <Content Include="Handbook\Pics\02.png" />
+    <Content Include="Handbook\Pics\02_1.png" />
+    <Content Include="Handbook\Pics\03.png" />
+    <Content Include="Handbook\Pics\04.png" />
+    <Content Include="Handbook\Pics\04_1.png" />
+    <Content Include="Handbook\Pics\Final Fantasy V %28J%29 [T+Eng1.1_RPGe][Backup]000.png" />
+    <Content Include="Handbook\Pics\Final Fantasy V [Noise] v0.9000.png" />
     <Content Include="N2Icon.ico" />
     <EmbeddedResource Include="Resources\SpeechWindow.png" />
   </ItemGroup>
