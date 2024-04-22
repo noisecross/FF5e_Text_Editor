@@ -6451,7 +6451,7 @@ namespace FF5e_Text_Editor
 
             outputMessage += "Developed by Noisecross:";
             outputMessage += "\r\n";
-            outputMessage += "Ver. v1.06 (November 2015)";
+            outputMessage += "Ver. v1.07 (April 2024)";
             outputMessage += "\r\n";
             outputMessage += "\r\n";
             outputMessage += "This tool is not under any kind of support, but for any questions please read the readme.docx file or contact the developer by email (dalastnecromancer@gmail.com)";
