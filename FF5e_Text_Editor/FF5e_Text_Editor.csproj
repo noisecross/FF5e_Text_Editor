@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project ToolsVersion="12.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">x86</Platform>
@@ -10,7 +10,7 @@
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>FF5e_Text_Editor</RootNamespace>
     <AssemblyName>FF5e_Text_Editor</AssemblyName>
-    <TargetFrameworkVersion>v4.0</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <TargetFrameworkProfile>
     </TargetFrameworkProfile>
     <FileAlignment>512</FileAlignment>
@@ -39,6 +39,7 @@
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x86' ">
     <PlatformTarget>x86</PlatformTarget>
@@ -48,6 +49,7 @@
     <DefineConstants>TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
   </PropertyGroup>
   <PropertyGroup>
     <ApplicationIcon>N2Icon.ico</ApplicationIcon>
@@ -128,10 +130,6 @@
       <LastGenOutput>Resources.Designer.cs</LastGenOutput>
     </EmbeddedResource>
     <None Include="app.config" />
-    <None Include="Handbook\Default.tbl" />
-    <None Include="Handbook\Default1bpp.tbl" />
-    <None Include="Handbook\Default2bpp.tbl" />
-    <None Include="Handbook\readme.pdf" />
     <None Include="Properties\Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>
       <LastGenOutput>Settings.Designer.cs</LastGenOutput>
@@ -143,15 +141,6 @@
     </Compile>
   </ItemGroup>
   <ItemGroup>
-    <Content Include="Handbook\Pics\01.png" />
-    <Content Include="Handbook\Pics\01_1.png" />
-    <Content Include="Handbook\Pics\02.png" />
-    <Content Include="Handbook\Pics\02_1.png" />
-    <Content Include="Handbook\Pics\03.png" />
-    <Content Include="Handbook\Pics\04.png" />
-    <Content Include="Handbook\Pics\04_1.png" />
-    <Content Include="Handbook\Pics\Final Fantasy V %28J%29 [T+Eng1.1_RPGe][Backup]000.png" />
-    <Content Include="Handbook\Pics\Final Fantasy V [Noise] v0.9000.png" />
     <Content Include="N2Icon.ico" />
     <EmbeddedResource Include="Resources\SpeechWindow.png" />
   </ItemGroup>

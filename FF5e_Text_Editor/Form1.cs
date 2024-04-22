@@ -723,7 +723,7 @@ namespace FF5e_Text_Editor
 
 
 
-        private List<String> appendToExportList(List<String> inputList, Dictionary<Byte, String> inputTBL, int offsetsAdress, int address, int nRegisters, byte eolByte, bool speech = false)
+        private List<String> appendToExportList(List<String> inputList, Dictionary<Byte, String> inputTBL, int offsetsAdress, int address, int nRegisters, byte eolByte, bool speech = false, byte escapeByte = 0x00)
         {
             List<String> output = inputList;
             List<int> offsets = new List<int>();
@@ -762,12 +762,24 @@ namespace FF5e_Text_Editor
                     String newLine = "";
 
                     byte newByte = br.ReadByte();
+                    byte preByte = 0x00;
 
-                    while (newByte != eolByte)
+                    do
                     {
+                        while (newByte != eolByte)
+                        {
+                            newLine += inputTBL[newByte];
+                            preByte = newByte;
+                            newByte = br.ReadByte();
+                        }
+
+                        if (escapeByte == 0x00 || preByte != escapeByte)
+                            break;
+
                         newLine += inputTBL[newByte];
+                        preByte = newByte;
                         newByte = br.ReadByte();
-                    }
+                    } while (true);
 
                     output.Add(newLine);
                 }
@@ -2458,7 +2470,7 @@ namespace FF5e_Text_Editor
 
             /* Battle Speech */
             /* 2760 + 1646 bytes */
-            output = appendToExportList(output, tblManager.TBL_Reader1bpp, 0x1139A9, 0x270000, 81, 0x00);
+            output = appendToExportList(output, tblManager.TBL_Reader1bpp, 0x1139A9, 0x270000, 81, 0x00, false, 0x10);
 
             if (output.Count == 81)
             {
