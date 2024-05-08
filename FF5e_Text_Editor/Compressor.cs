@@ -82,6 +82,7 @@ namespace FF5e_Text_Editor
 
                 writtenData += firstNonzero;
                 index       += firstNonzero;
+                index       &= bufferMask;
             }
 
 
@@ -204,6 +205,7 @@ namespace FF5e_Text_Editor
 
                 output.Insert(index, newMask);
                 index += nextGroupSize;
+                index &= bufferMask;
             }
 
 

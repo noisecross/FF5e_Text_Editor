@@ -20,8 +20,10 @@ using System.Data;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Linq;
+using System.Net;
 using System.Text;
 using System.Windows.Forms;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement.Button;
 
 
 
@@ -76,7 +78,6 @@ namespace FF5e_Text_Editor
         /* Global variables */
         const string windowName      = "FF5e_Text_Editor";
         int          headerOffset    = 0;
-        TBL_Manager  tblManager;
 
         Bitmap       font1bppBitmap  = new Bitmap(1,1);
         Bitmap       font1bppBitmapW = new Bitmap(1,1);
@@ -89,6 +90,9 @@ namespace FF5e_Text_Editor
 
         List<int> speechPtr = new List<int>();
         List<List<Byte>> speech = new List<List<byte>>();
+
+        TBL_Manager tblManager;
+        AdressingConfiguration ac;
 
         /* SMC file to edit */
         String fileUnderEdition = "";
@@ -124,6 +128,7 @@ namespace FF5e_Text_Editor
             UpdateStyles();
 
             tblManager = new TBL_Manager();
+            ac = new AdressingConfiguration();
 
             comboBoxMenuEnlarge.SelectedIndex = 0;
             comboBoxMagicMenuEnlarge.SelectedIndex = 0;
@@ -134,10 +139,13 @@ namespace FF5e_Text_Editor
             tabControl1.TabPages[4].Dispose();
             label2.Dispose();
             buttonBugFixChecksum.Dispose();
+            buttonDummy.Dispose();
 
             windowsBmp[0] = new Bitmap(256, 256);
             windowsBmp[1] = new Bitmap(256, 256);
             windowsBmp[2] = new Bitmap(256, 256);
+
+            groupBox6.Enabled = ac.EnableRPGeFixes;
         }
 
 
@@ -177,15 +185,15 @@ namespace FF5e_Text_Editor
         private void loadFont(System.IO.BinaryReader br, int tableToReadFrom)
         {
             List<Byte> byteMap = new List<byte>();
-            int table = (tableToReadFrom < 1) ? 0x03EB00 : 0x203724;
+            int table = (tableToReadFrom < 1) ? ac.Font1BPP_Add0 : ac.Font1BPP_Add1;
 
             br.BaseStream.Position = table + headerOffset;
 
-            for (int i = 0; i < 0x0012C0; i++)
+            for (int i = 0; i < ac.Font1BPP_Size; i++)
             {
                 byteMap.Add((Byte)br.BaseStream.ReadByte());
             }
-            font1bppBitmap = Transformations.transform1bpp(byteMap, 0, 0x0012C0);
+            font1bppBitmap = Transformations.transform1bpp(byteMap, 0, ac.Font1BPP_Size);
         }
 
 
@@ -194,13 +202,13 @@ namespace FF5e_Text_Editor
         {
             List<Byte> byteMap = new List<byte>();
 
-            br.BaseStream.Position = 0x11F000 + headerOffset;
+            br.BaseStream.Position = ac.Font2BPP_Addr + headerOffset;
 
-            for (int i = 0; i < 0x001000; i++)
+            for (int i = 0; i < ac.Font2BPP_Size; i++)
             {
                 byteMap.Add((Byte)br.BaseStream.ReadByte());
             }
-            font2bppBitmap = Transformations.transform2bpp(byteMap, 0, 0x001000);
+            font2bppBitmap = Transformations.transform2bpp(byteMap, 0, ac.Font2BPP_Size);
         }
 
 
@@ -209,7 +217,7 @@ namespace FF5e_Text_Editor
         {
             /* Load widths */
             long fileSize = br.BaseStream.Length;
-            int table     = (tableToReadFrom < 1) ? 0x203225 : 0x203325;
+            int table     = (tableToReadFrom < 1) ? ac.F1BPPWid_Add0 : ac.F1BPPWid_Add1;
 
             if (fileSize > 0x200000)
             {
@@ -252,9 +260,9 @@ namespace FF5e_Text_Editor
             speech.Clear();
 
             /* Read Speech */
-            br.BaseStream.Position = 0x2013F0 + headerOffset;
+            br.BaseStream.Position = ac.Speech_OffAdd + headerOffset;
 
-            for (int i = 0; i < 2160; i++)
+            for (int i = 0; i < ac.Speech_NRec; i++)
             {
                 int newPtr = br.ReadByte() + br.ReadByte() * 0x0100 + (br.ReadByte() - 0xC0) * 0x010000;
                 speechPtr.Add(newPtr);
@@ -281,7 +289,6 @@ namespace FF5e_Text_Editor
                 }
 
                 speech.Add(newRegister);
-
             }
         }
 
@@ -294,110 +301,111 @@ namespace FF5e_Text_Editor
         private void openSMCToolStripMenuItem_Click(object sender, EventArgs e)
         {
             /* Displays an OpenFileDialog so the user can select a res */
-            OpenFileDialog openFileDialog = new OpenFileDialog();
-            openFileDialog.Filter = "SNES ROM Files (*.smc, *.sfc)|*.smc;*.sfc";
-            openFileDialog.Title  = "Choose a ROM file";
+            using (OpenFileDialog openFileDialog = new OpenFileDialog())
+            {
+                openFileDialog.Filter = "SNES ROM Files (*.smc, *.sfc)|*.smc;*.sfc";
+                openFileDialog.Title = "Choose a ROM file";
 
+                /* Show the Dialog */
+                if (openFileDialog.ShowDialog() == DialogResult.OK)
+                {
+                    string fileName = openFileDialog.FileName;
+                    if (fileName != "" && System.IO.File.Exists(fileName))
+                        openSMCLoadOperations(fileName);
+                }
+            }
+
+            panelMuteSpell.Refresh();
+        }
+
+        private void openSMCLoadOperations(string fileName)
+        {
             long fileSize = 0;
 
-            /* Show the Dialog */
-            if (openFileDialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            using (System.IO.BinaryReader br = new System.IO.BinaryReader(System.IO.File.Open(fileName, System.IO.FileMode.Open)))
             {
-                if (openFileDialog.FileName != "")
+                try
                 {
-                    System.IO.BinaryReader br = new System.IO.BinaryReader(System.IO.File.Open(openFileDialog.FileName, System.IO.FileMode.Open));
+                    if (!checkSNESHeader(br))
+                        return;
 
+                    /*
+                    Temas para el inyector:
+
+                    Leer primera tabla de tamaños: E03325 is the size table of 03EB00 font (1bpp)
+                    Leer segunda tabla de tamaños: E03225 is the size table of E03725 font (1bpp)(At the beggining there was "Void")
+                    */
+
+                    fileToEditIsAvailable = false;
+                    comboBox1bppFont.SelectedIndex = 0;
+                    fileSize = br.BaseStream.Length;
+
+                    /* Reset speech */
+                    speechPtr.Clear();
+                    speech.Clear();
+
+                    /* Load font */
+                    loadFont(br, 0);
+
+                    /* Load 2bpp font */
+                    load2bppFont(br);
+
+                    /* Get mute spell */
+                    muteSpell = getMuteSpellBitmap(br);
+
+                    /* Load font1bppChars */
+                    for (int j = 0; j < 25; j++)
+                    {
+                        for (int i = 0; i < 8; i++)
+                        {
+                            Rectangle cloneRect = new Rectangle(i * 16, j * 12, 16, 12);
+                            font1bppChars[(j * 8) + i] = font1bppBitmap.Clone(cloneRect, font1bppBitmap.PixelFormat);
+                        }
+                    }
+
+                    /* Load font2bppChars */
+                    for (int j = 0; j < 16; j++)
+                    {
+                        for (int i = 0; i < 16; i++)
+                        {
+                            Rectangle cloneRect = new Rectangle(i * 8, j * 8, 8, 8);
+                            font2bppChars[(j * 16) + i] = font2bppBitmap.Clone(cloneRect, font2bppBitmap.PixelFormat);
+                        }
+                    }
+
+                    loadWidths(br, 0);
+
+                    if (fileSize > 0x200000)
+                        panel2bpp.Refresh();
+
+                    fileUnderEdition = fileName;
+                    fileToEditIsAvailable = true;
+                }
+                catch (Exception error)
+                {
+                    MessageBox.Show("Error loading the file: " + error.ToString(), "Error");
+                }
+
+                if (fileToEditIsAvailable && fileSize > 0x200000)
+                {
                     try
                     {
-                        /*
-                        Temas para el inyector:
-
-                        Leer primera tabla de tamaños: E03325 is the size table of 03EB00 font (1bpp)
-                        Leer segunda tabla de tamaños: E03225 is the size table of E03725 font (1bpp)(At the beggining there was "Void")
-                        */
-                        if (!checkSNESHeader(br))
-                        {
-                            br.Close();
-                            openFileDialog.Dispose();
-                            openFileDialog = null;
-                            return;
-                        }
-                        else
-                        {
-                            fileToEditIsAvailable = false;
-                            comboBox1bppFont.SelectedIndex = 0;
-                            fileSize = br.BaseStream.Length;
-
-                            /* Reset speech */
-                            speechPtr.Clear();
-                            speech.Clear();
-
-                            /* Load font */
-                            loadFont(br, 0);
-
-                            /* Load 2bpp font */
-                            load2bppFont(br);
-
-                            /* Get mute spell */
-                            muteSpell = getMuteSpellBitmap(br);
-
-                            /* Load font1bppChars */
-	                        for(int j = 0 ; j < 25 ; j++){
-		                        for(int i = 0 ; i < 8 ; i++){
-			                        Rectangle cloneRect = new Rectangle(i * 16, j * 12, 16, 12);
-			                        font1bppChars[(j * 8) + i] = font1bppBitmap.Clone(cloneRect, font1bppBitmap.PixelFormat);
-		                        }
-	                        }
-
-                            /* Load font2bppChars */
-                            for (int j = 0; j < 16; j++)
-                            {
-                                for (int i = 0; i < 16; i++)
-                                {
-                                    Rectangle cloneRect = new Rectangle(i * 8, j * 8, 8, 8);
-                                    font2bppChars[(j * 16) + i] = font2bppBitmap.Clone(cloneRect, font2bppBitmap.PixelFormat);
-                                }
-                            }
-
-
-                            loadWidths(br, 0);
-
-
-                            if (fileSize > 0x200000)
-                            {
-                                panel2bpp.Refresh();
-                            }
-                        }
-
-                        fileUnderEdition = openFileDialog.FileName;
-                        fileToEditIsAvailable = true;
+                        loadSpeech(br);
                     }
                     catch (Exception error)
                     {
                         MessageBox.Show("Error loading the file: " + error.ToString(), "Error");
                     }
-
-                    if (fileToEditIsAvailable && fileSize > 0x200000)
-                    {
-                        loadSpeech(br);
-
-                        numericUpDownIdSpeech.Value = 0;
-                        comboBoxSubSpeech.SelectedIndex = 0;
-
-
-                        /* Load misc texts */
-                        br.Close();
-                        loadMiscTexts();
-
-                    }
-
-                    br.Close();
+                    numericUpDownIdSpeech.Value = 0;
+                    comboBoxSubSpeech.SelectedIndex = 0;
                 }
             }
-            openFileDialog.Dispose();
-            openFileDialog = null;
 
-            panelMuteSpell.Refresh();
+            if (fileToEditIsAvailable && fileSize > 0x200000)
+            {
+                /* Load misc texts */
+                loadMiscTexts();
+            }
         }
 
 
@@ -448,21 +456,21 @@ namespace FF5e_Text_Editor
             D0E191 EXP      (3byte)(Credits)
             */
 
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x203103, 1 /* nRegisters */, 10 /* registersSize */);
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x20310E, 1 /* nRegisters */, 4 /* registersSize */);
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x203113, 1 /* nRegisters */, 4 /* registersSize */);
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x203118, 1 /* nRegisters */, 5 /* registersSize */);
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x00EA6C, 1 /* nRegisters */, 7 /* registersSize */);
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x00F7A8, 1 /* nRegisters */, 4 /* registersSize */);
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x0115C4, 1 /* nRegisters */, 5 /* registersSize */);
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x00EA74, 1 /* nRegisters */, 2 /* registersSize */);
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x00EAF7, 1 /* nRegisters */, 1 /* registersSize */);
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x0EFFBC, 1 /* nRegisters */, 6 /* registersSize */);
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x10E181, 1 /* nRegisters */, 2 /* registersSize */);
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x10E189, 1 /* nRegisters */, 2 /* registersSize */);
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x10E191, 1 /* nRegisters */, 3 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_DefenseAdd, 1 /* nRegisters */, ac.Misc_DefenseSize);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_DefAdd, 1 /* nRegisters */, ac.Misc_DefSize);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_EqpAdd, 1 /* nRegisters */, ac.Misc_EqpSize);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_EmptyAdd, 1 /* nRegisters */, ac.Misc_EmptySize);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_MasterAdd, 1 /* nRegisters */, ac.Misc_MasterSize);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_AnyAdd, 1 /* nRegisters */, ac.Misc_AnySize);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_PauseAdd, 1 /* nRegisters */, ac.Misc_PauseSize);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_LvAdd, 1 /* nRegisters */, ac.Misc_LvSize);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_LAdd, 1 /* nRegisters */, ac.Misc_LSize);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_UsesMPAdd, 1 /* nRegisters */, ac.Misc_UsesMPSize);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_HPAdd, 1 /* nRegisters */, ac.Misc_HPSize);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_MPAdd, 1 /* nRegisters */, ac.Misc_MPSize);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_EXPAdd, 1 /* nRegisters */, ac.Misc_EXPSize);
             output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x01F868, 1 /* nRegisters */, 1 /* registersSize */);
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x00FAA0, 1 /* nRegisters */, 3 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Misc_SellAdd, 1 /* nRegisters */, ac.Misc_SellSize);
 
             textBoxMiscTextDefense.Text = output[0];
             textBoxMiscTextDef.Text = output[1];
@@ -679,6 +687,49 @@ namespace FF5e_Text_Editor
 
 
 
+        private void appendToByteList(System.IO.BinaryReader br, List<long> addresses, List<List<Byte>> bytesList, int address, int nRecords, int recordSize)
+        {
+            br.BaseStream.Position = address + headerOffset;
+            for (int i = 0; i < nRecords; i++)
+            {
+                addresses.Add(br.BaseStream.Position - headerOffset);
+                bytesList.Add(br.ReadBytes(recordSize).ToList());
+            }
+        }
+
+
+
+        private void appendVWTableToByteList(System.IO.BinaryReader br, List<long> addresses, List<List<Byte>> bytesList, int offsetAddresses, int address, int nRecords, ref int maxSize)
+        {
+            int size = 0;
+            int nextOffset = 0;
+
+            br.BaseStream.Position = offsetAddresses + headerOffset;
+            int offset = br.ReadByte() + (br.ReadByte() * 0x0100);
+
+            long nextAddressToRead = br.BaseStream.Position;
+            addresses.Add(br.BaseStream.Position - headerOffset);
+
+            for (int i = 0; i < nRecords; i++)
+            {
+                br.BaseStream.Position = nextAddressToRead;
+                nextOffset = br.ReadByte() + (br.ReadByte() * 0x0100);
+                nextAddressToRead = br.BaseStream.Position;
+
+                addresses.Add(br.BaseStream.Position - headerOffset);
+
+                br.BaseStream.Position = offset + address + headerOffset;
+                size = Math.Max(nextOffset - offset, 1);
+                if (size > maxSize)
+                    maxSize = size;
+                bytesList.Add(br.ReadBytes(size).ToList());
+
+                offset = nextOffset;
+            }
+        }
+
+
+
         private List<String> appendToExportList(List<String> inputList, Dictionary<Byte, String> inputTBL, int address, int nRegisters, int registersSize)
         {
             List<String> output = inputList;
@@ -690,33 +741,33 @@ namespace FF5e_Text_Editor
                     return output;
             }
 
-            System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
-            System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
-
-            try
+            using (System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open))
             {
-                br.BaseStream.Position = address + headerOffset;
-
-                for (int i = 0; i < nRegisters; i++)
+                using (System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding()))
                 {
-                    String newLine = "";
-
-                    for (int j = 0; j < registersSize; j++)
+                    try
                     {
-                        newLine += inputTBL[br.ReadByte()];
+                        br.BaseStream.Position = address + headerOffset;
+
+                        for (int i = 0; i < nRegisters; i++)
+                        {
+                            String newLine = "";
+
+                            for (int j = 0; j < registersSize; j++)
+                            {
+                                newLine += inputTBL[br.ReadByte()];
+                            }
+
+                            output.Add(newLine);
+                        }
+
                     }
-
-                    output.Add(newLine);
+                    catch (Exception e)
+                    {
+                        MessageBox.Show("Error reading the file: " + e.ToString(), "Error");
+                    }
                 }
-
             }
-            catch (Exception e)
-            {
-                MessageBox.Show("Error reading the file: " + e.ToString(), "Error");
-            }
-
-            br.Close();
-            fs.Close();
 
             return output;
         }
@@ -969,10 +1020,10 @@ namespace FF5e_Text_Editor
                                 /* 1bbp */
                                 /* Offset 0x03EB00 */
                                 /* Size   0x0012C0 */
-                                offset = 0x03EB00;
+                                offset = ac.Font1BPP_Add0;
                                 nColumns = (int)Math.Truncate(128.0 / 8);
                                 size = (size - (size % ((8 * nColumns) * 12)));
-                                if (size == (0x0012C0 * 8))
+                                if (size == (ac.Font1BPP_Size * 8))
                                     newBytes = InvertingTransformations.import1bpp(bitmapPixels, 8, 12, size);
                                 else
                                     newBytes = new List<byte>();
@@ -981,10 +1032,10 @@ namespace FF5e_Text_Editor
                                 /* 2bbp */
                                 /* Offset 0x11F000 */
                                 /* Size   0x001000 */
-                                offset = 0x11F000;
+                                offset = ac.Font2BPP_Addr;
                                 nColumns = (int)Math.Truncate(128.0 / 8);
                                 size = size - (size % ((8 * nColumns) * 8));
-                                if (size == 0x004000)
+                                if (size == (ac.Font2BPP_Size * 4))
                                     newBytes = InvertingTransformations.import2bpp(bitmapPixels, 8, 8, size);
                                 else
                                     newBytes = new List<byte>();
@@ -993,10 +1044,10 @@ namespace FF5e_Text_Editor
                                 /* 1bpp */
                                 /* Offset 0x203724 */
                                 /* Size   0x001380 */
-                                offset = 0x203724;
+                                offset = ac.Font1BPP_Add1;
                                 nColumns = (int)Math.Truncate(128.0 / 8);
                                 size = (size - (size % ((8 * nColumns) * 12)));
-                                if (size == (0x001380 * 8))
+                                if (size == (ac.Font1BPP_Siz1 * 8))
                                     newBytes = InvertingTransformations.import1bpp(bitmapPixels, 8, 12, size);
                                 else
                                     newBytes = new List<byte>();
@@ -1279,11 +1330,12 @@ namespace FF5e_Text_Editor
             try
             {
                 // Fix the RPGe speech issues
-                fixRPGeSpeechASM(bw);
+                if(ac.EnableRPGeFixes)
+                    fixRPGeSpeechASM(bw);
 
                 /* Get sizes */
                 List<Byte> sizes = new List<byte>();
-                bw.BaseStream.Position = 0x203225 + headerOffset;
+                bw.BaseStream.Position = ac.F1BPPWid_Add0 + headerOffset;
                 for (int k = 0; k < 0x0100; k++)
                 {
                     sizes.Add(BitConverter.GetBytes(bw.BaseStream.ReadByte())[0]);
@@ -1641,7 +1693,7 @@ namespace FF5e_Text_Editor
 
             try
             {
-                br.BaseStream.Position = 0x203225 + headerOffset;
+                br.BaseStream.Position = ac.F1BPPWid_Add0 + headerOffset;
                 sizes = br.ReadBytes(0x0100).ToList();
             }
             catch (Exception e)
@@ -1696,9 +1748,9 @@ namespace FF5e_Text_Editor
             List<String> output = new List<String>();
 
             /* Monster names */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x200050, 384 /* nRegisters */, 10 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Monster_Add, ac.Monster_NRec /* nRegisters */, ac.Monster_RSiz /* registersSize */);
 
-            if (output.Count == 384)
+            if (output.Count == ac.Monster_NRec)
             {
                 CSV_Manager.exportCSV("Monsters", output);
             }
@@ -1711,9 +1763,9 @@ namespace FF5e_Text_Editor
             List<String> monsters = new List<String>();
 
             /* Monster names */
-            monsters = appendToExportList(monsters, tblManager.TBL_Reader2bpp, 0x200050, 384 /* nRegisters */, 10 /* registersSize */);
+            monsters = appendToExportList(monsters, tblManager.TBL_Reader2bpp, ac.Monster_Add, ac.Monster_NRec /* nRegisters */, ac.Monster_RSiz /* registersSize */);
 
-            if (monsters.Count == 384)
+            if (monsters.Count == ac.Monster_NRec)
             {
                 System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
                 System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
@@ -1722,17 +1774,13 @@ namespace FF5e_Text_Editor
                 //0x200050, 384regs, 10bytes
                 List<long> addresses = new List<long>();
                 List<List<Byte>> bytesList = new List<List<byte>>();
-                br.BaseStream.Position = 0x200050 + headerOffset;
-                for (int i = 0; i < 384; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(10).ToList());
-                }
+                appendToByteList(br, addresses, bytesList, ac.Monster_Add, ac.Monster_NRec, ac.Monster_RSiz);
+
 
                 br.Close();
                 fs.Close();
 
-                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector2bpp, addresses, bytesList, monsters, font2bppChars, 10);
+                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector2bpp, addresses, bytesList, monsters, font2bppChars, ac.Monster_RSiz);
                 form.ShowDialog();
                 form.Dispose();
             }
@@ -1745,9 +1793,9 @@ namespace FF5e_Text_Editor
             List<String> output = new List<String>();
 
             /* Monster Attacks */
-            output = appendToExportList(output, tblManager.TBL_Reader1bpp, 0x273700, 64 /* nRegisters */, 16 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader1bpp, ac.MonAttakcs_Add, ac.MonAttakcs_NRec /* nRegisters */, ac.MonAttakcs_RSiz /* registersSize */);
 
-            if (output.Count == 64)
+            if (output.Count == ac.MonAttakcs_NRec)
             {
                 CSV_Manager.exportCSV("MonsterAttacks", output);
             }
@@ -1760,9 +1808,9 @@ namespace FF5e_Text_Editor
             List<String> monsterAttacks = new List<String>();
 
             /* Monster attacks names */
-            monsterAttacks = appendToExportList(monsterAttacks, tblManager.TBL_Reader1bpp, 0x273700, 64 /* nRegisters */, 16 /* registersSize */);
+            monsterAttacks = appendToExportList(monsterAttacks, tblManager.TBL_Reader1bpp, ac.MonAttakcs_Add, ac.MonAttakcs_NRec /* nRegisters */, ac.MonAttakcs_RSiz /* registersSize */);
 
-            if (monsterAttacks.Count == 64)
+            if (monsterAttacks.Count == ac.MonAttakcs_NRec)
             {
                 System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
                 System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
@@ -1771,12 +1819,7 @@ namespace FF5e_Text_Editor
                 //0x273700, 64regs, 16bytes
                 List<long> addresses = new List<long>();
                 List<List<Byte>> bytesList = new List<List<byte>>();
-                br.BaseStream.Position = 0x273700 + headerOffset;
-                for (int i = 0; i < 64; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(16).ToList());
-                }
+                appendToByteList(br, addresses, bytesList, ac.MonAttakcs_Add, ac.MonAttakcs_NRec, ac.MonAttakcs_RSiz);
 
                 br.Close();
                 fs.Close();
@@ -1792,7 +1835,7 @@ namespace FF5e_Text_Editor
                     newFont1bppChars[i + 0x20] = font1bppChars[i];
 
 
-                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector1bpp, addresses, bytesList, monsterAttacks, newFont1bppChars, 16, false, fontWidths);
+                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector1bpp, addresses, bytesList, monsterAttacks, newFont1bppChars, ac.MonAttakcs_RSiz, false, fontWidths);
                 form.ShowDialog();
                 form.Dispose();
             }
@@ -1806,18 +1849,18 @@ namespace FF5e_Text_Editor
             List<String> output = new List<String>();
 
             /* SkillsM 01 */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x111C80, 87 /* nRegisters */, 6 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.SkillsM01_Add, ac.SkillsM01_NRec /* nRegisters */, ac.SkillsM01_RSiz /* registersSize */);
 
             /* SkillsM 02 */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x270F90, 169 /* nRegisters */, 12 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.SkillsM02_Add, ac.SkillsM02_NRec /* nRegisters */, ac.SkillsM02_RSiz /* registersSize */);
 
             /* SkillsM Blue */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x11200D, 30 /* nRegisters */, 9 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.SkillsMBl_Add, ac.SkillsMBl_NRec /* nRegisters */, ac.SkillsMBl_RSiz /* registersSize */);
 
             /* SkillsM Songs */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x111E8A, 8 /* nRegisters */, 9 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.SkillsMSo_Add, ac.SkillsMSo_NRec /* nRegisters */, ac.SkillsMSo_RSiz /* registersSize */);
 
-            if (output.Count == 294)
+            if (output.Count == ac.SkillsM01_NRec + ac.SkillsM02_NRec + ac.SkillsMBl_NRec + ac.SkillsMSo_NRec)
             {
                 CSV_Manager.exportCSV("SkillsM", output);
             }
@@ -1830,12 +1873,12 @@ namespace FF5e_Text_Editor
             List<String> skillsM = new List<String>();
 
             /* SkillsM */
-            skillsM = appendToExportList(skillsM, tblManager.TBL_Reader2bpp, 0x111C80, 87 /* nRegisters */, 6 /* registersSize */);
-            skillsM = appendToExportList(skillsM, tblManager.TBL_Reader2bpp, 0x270F90, 169 /* nRegisters */, 12 /* registersSize */);
-            skillsM = appendToExportList(skillsM, tblManager.TBL_Reader2bpp, 0x11200D, 30 /* nRegisters */, 9 /* registersSize */);
-            skillsM = appendToExportList(skillsM, tblManager.TBL_Reader2bpp, 0x111E8A, 8 /* nRegisters */, 9 /* registersSize */);
+            skillsM = appendToExportList(skillsM, tblManager.TBL_Reader2bpp, ac.SkillsM01_Add, ac.SkillsM01_NRec /* nRegisters */, ac.SkillsM01_RSiz /* registersSize */);
+            skillsM = appendToExportList(skillsM, tblManager.TBL_Reader2bpp, ac.SkillsM02_Add, ac.SkillsM02_NRec /* nRegisters */, ac.SkillsM02_RSiz /* registersSize */);
+            skillsM = appendToExportList(skillsM, tblManager.TBL_Reader2bpp, ac.SkillsMBl_Add, ac.SkillsMBl_NRec /* nRegisters */, ac.SkillsMBl_RSiz /* registersSize */);
+            skillsM = appendToExportList(skillsM, tblManager.TBL_Reader2bpp, ac.SkillsMSo_Add, ac.SkillsMSo_NRec /* nRegisters */, ac.SkillsMSo_RSiz /* registersSize */);
 
-            if (skillsM.Count == 294)
+            if (skillsM.Count == ac.SkillsM01_NRec + ac.SkillsM02_NRec + ac.SkillsMBl_NRec + ac.SkillsMSo_NRec)
             {
                 System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
                 System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
@@ -1847,39 +1890,18 @@ namespace FF5e_Text_Editor
                 //0x111E8A, 8   regs, 9  bytes
                 List<long> addresses = new List<long>();
                 List<List<Byte>> bytesList = new List<List<byte>>();
-                br.BaseStream.Position = 0x111C80 + headerOffset;
-                for (int i = 0; i < 87; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(6).ToList());
-                }
-                br.BaseStream.Position = 0x270F90 + headerOffset;
-                for (int i = 0; i < 169; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(12).ToList());
-                }
-                br.BaseStream.Position = 0x11200D + headerOffset;
-                for (int i = 0; i < 30; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(9).ToList());
-                }
-                br.BaseStream.Position = 0x111E8A + headerOffset;
-                for (int i = 0; i < 8; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(9).ToList());
-                }
+                appendToByteList(br, addresses, bytesList, ac.SkillsM01_Add, ac.SkillsM01_NRec, ac.SkillsM01_RSiz);
+                appendToByteList(br, addresses, bytesList, ac.SkillsM02_Add, ac.SkillsM02_NRec, ac.SkillsM02_RSiz);
+                appendToByteList(br, addresses, bytesList, ac.SkillsMBl_Add, ac.SkillsMBl_NRec, ac.SkillsMBl_RSiz);
+                appendToByteList(br, addresses, bytesList, ac.SkillsMSo_Add, ac.SkillsMSo_NRec, ac.SkillsMSo_RSiz);
 
                 br.Close();
                 fs.Close();
 
-                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector2bpp, addresses, bytesList, skillsM, font2bppChars, 12);
+                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector2bpp, addresses, bytesList, skillsM, font2bppChars, ac.SkillsM02_RSiz);
                 form.ShowDialog();
                 form.Dispose();
             }
-
         }
 
 
@@ -1889,12 +1911,12 @@ namespace FF5e_Text_Editor
             List<String> output = new List<String>();
 
             /* SkillsB */
-            output = appendToExportList(output, tblManager.TBL_Reader1bpp, 0x270900, 105 /* nRegisters */, 16 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader1bpp, ac.SkillsB01_Add, ac.SkillsB01_NRec /* nRegisters */, ac.SkillsB01_RSiz /* registersSize */);
 
             /* SkillsB 02 */
-            output = appendToExportList(output, tblManager.TBL_Reader1bpp, 0x271780, 169 /* nRegisters */, 24 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader1bpp, ac.SkillsB02_Add, ac.SkillsB02_NRec /* nRegisters */, ac.SkillsB02_RSiz /* registersSize */);
 
-            if (output.Count == 274)
+            if (output.Count == ac.SkillsB01_NRec + ac.SkillsB02_NRec)
             {
                 CSV_Manager.exportCSV("SkillsB", output);
             }
@@ -1907,12 +1929,12 @@ namespace FF5e_Text_Editor
             List<String> skillsB = new List<String>();
 
             /* SkillsB */
-            skillsB = appendToExportList(skillsB, tblManager.TBL_Reader1bpp, 0x270900, 105 /* nRegisters */, 16 /* registersSize */);
+            skillsB = appendToExportList(skillsB, tblManager.TBL_Reader1bpp, ac.SkillsB01_Add, ac.SkillsB01_NRec /* nRegisters */, ac.SkillsB01_RSiz /* registersSize */);
 
             /* SkillsB 02 */
-            skillsB = appendToExportList(skillsB, tblManager.TBL_Reader1bpp, 0x271780, 169 /* nRegisters */, 24 /* registersSize */);
+            skillsB = appendToExportList(skillsB, tblManager.TBL_Reader1bpp, ac.SkillsB02_Add, ac.SkillsB02_NRec /* nRegisters */, ac.SkillsB02_RSiz /* registersSize */);
 
-            if (skillsB.Count == 274)
+            if (skillsB.Count == ac.SkillsB01_NRec + ac.SkillsB02_NRec)
             {
                 System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
                 System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
@@ -1921,18 +1943,8 @@ namespace FF5e_Text_Editor
                 //0x273700, 64regs, 16bytes
                 List<long> addresses = new List<long>();
                 List<List<Byte>> bytesList = new List<List<byte>>();
-                br.BaseStream.Position = 0x270900 + headerOffset;
-                for (int i = 0; i < 105; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(16).ToList());
-                }
-                br.BaseStream.Position = 0x271780 + headerOffset;
-                for (int i = 0; i < 169; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(24).ToList());
-                }
+                appendToByteList(br, addresses, bytesList, ac.SkillsB01_Add, ac.SkillsB01_NRec, ac.SkillsB01_RSiz);
+                appendToByteList(br, addresses, bytesList, ac.SkillsB02_Add, ac.SkillsB02_NRec, ac.SkillsB02_RSiz);
 
                 br.Close();
                 fs.Close();
@@ -1948,7 +1960,7 @@ namespace FF5e_Text_Editor
                     newFont1bppChars[i + 0x20] = font1bppChars[i];
 
 
-                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector1bpp, addresses, bytesList, skillsB, newFont1bppChars, 24, false, fontWidths);
+                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector1bpp, addresses, bytesList, skillsB, newFont1bppChars, ac.SkillsB02_RSiz, false, fontWidths);
                 form.ShowDialog();
                 form.Dispose();
             }
@@ -1961,15 +1973,15 @@ namespace FF5e_Text_Editor
             List<String> output = new List<String>();
 
             /* Commands */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x201150, 95 /* nRegisters */, 7 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Commands_Add, ac.Commands_NRec /* nRegisters */, ac.Commands_RSiz /* registersSize */);
 
             /* Abilities (menu) */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x116200, 33 /* nRegisters */, 8 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.AbilitiesM_Add, ac.AbilitiesM_NRec /* nRegisters */, ac.AbilitiesM_RSiz /* registersSize */);
 
             /* Abilities (Battle) */
-            output = appendToExportList(output, tblManager.TBL_Reader1bpp, 0x277060, 33 /* nRegisters */, 24 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader1bpp, ac.AbilitiesB_Add, ac.AbilitiesB_NRec /* nRegisters */, ac.AbilitiesB_RSiz /* registersSize */);
 
-            if (output.Count == 161)
+            if (output.Count == ac.Commands_NRec + ac.AbilitiesM_NRec + ac.AbilitiesB_NRec)
             {
                 CSV_Manager.exportCSV("Commands", output);
             }
@@ -1982,11 +1994,11 @@ namespace FF5e_Text_Editor
             List<String> commands = new List<String>();
 
             /* Commands */
-            commands = appendToExportList(commands, tblManager.TBL_Reader2bpp, 0x201150, 95 /* nRegisters */, 7  /* registersSize */);
-            commands = appendToExportList(commands, tblManager.TBL_Reader2bpp, 0x116200, 33 /* nRegisters */, 8  /* registersSize */);
-            commands = appendToExportList(commands, tblManager.TBL_Reader2bpp, 0x277060, 33 /* nRegisters */, 24 /* registersSize */);
+            commands = appendToExportList(commands, tblManager.TBL_Reader2bpp, ac.Commands_Add, ac.Commands_NRec /* nRegisters */, ac.Commands_RSiz /* registersSize */);
+            commands = appendToExportList(commands, tblManager.TBL_Reader2bpp, ac.AbilitiesM_Add, ac.AbilitiesM_NRec /* nRegisters */, ac.AbilitiesM_RSiz /* registersSize */);
+            commands = appendToExportList(commands, tblManager.TBL_Reader1bpp, ac.AbilitiesB_Add, ac.AbilitiesB_NRec /* nRegisters */, ac.AbilitiesB_RSiz /* registersSize */);
 
-            if (commands.Count == 161)
+            if (commands.Count == ac.Commands_NRec + ac.AbilitiesM_NRec + ac.AbilitiesB_NRec)
             {
                 System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
                 System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
@@ -1997,29 +2009,14 @@ namespace FF5e_Text_Editor
                 //0x277060, 33 regs, 24 bytes
                 List<long> addresses = new List<long>();
                 List<List<Byte>> bytesList = new List<List<byte>>();
-                br.BaseStream.Position = 0x201150 + headerOffset;
-                for (int i = 0; i < 95; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(7).ToList());
-                }
-                br.BaseStream.Position = 0x116200 + headerOffset;
-                for (int i = 0; i < 33; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(8).ToList());
-                }
-                br.BaseStream.Position = 0x277060 + headerOffset;
-                for (int i = 0; i < 33; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(24).ToList());
-                }
+                appendToByteList(br, addresses, bytesList, ac.Commands_Add, ac.Commands_NRec, ac.Commands_RSiz);
+                appendToByteList(br, addresses, bytesList, ac.AbilitiesM_Add, ac.AbilitiesM_NRec, ac.AbilitiesM_RSiz);
+                appendToByteList(br, addresses, bytesList, ac.AbilitiesB_Add, ac.AbilitiesB_NRec, ac.AbilitiesB_RSiz);
 
                 br.Close();
                 fs.Close();
 
-                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector2bpp, addresses, bytesList, commands, font2bppChars, 8);
+                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector2bpp, addresses, bytesList, commands, font2bppChars, ac.AbilitiesM_RSiz);
                 form.ShowDialog();
                 form.Dispose();
             }
@@ -2032,15 +2029,15 @@ namespace FF5e_Text_Editor
             List<String> output = new List<String>();
 
             /* Items (menu) */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x111380, 256 /* nRegisters */, 9 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.ItemsM_Add, ac.ItemsM_NRec /* nRegisters */, ac.ItemsM_RSiz /* registersSize */);
 
             /* Rare items (menu) */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x273568, 24 /* nRegisters */, 13 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.ItemsR_Add, ac.ItemsR_NRec /* nRegisters */, ac.ItemsR_RSiz /* registersSize */);
 
             /* Items (battle) */
-            output = appendToExportList(output, tblManager.TBL_Reader1bpp, 0x275860, 256 /* nRegisters */, 24 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader1bpp, ac.ItemsB_Add, ac.ItemsB_NRec /* nRegisters */, ac.ItemsB_RSiz /* registersSize */);
 
-            if (output.Count == 536)
+            if (output.Count == ac.ItemsM_NRec + ac.ItemsR_NRec + ac.ItemsB_NRec)
             {
                 CSV_Manager.exportCSV("Items", output);
             }
@@ -2053,10 +2050,10 @@ namespace FF5e_Text_Editor
             List<String> items = new List<String>();
 
             /* Items */
-            items = appendToExportList(items, tblManager.TBL_Reader2bpp, 0x111380, 256 /* nRegisters */, 9 /* registersSize */);
-            items = appendToExportList(items, tblManager.TBL_Reader2bpp, 0x273568, 24 /* nRegisters */, 13 /* registersSize */);
+            items = appendToExportList(items, tblManager.TBL_Reader2bpp, ac.ItemsM_Add, ac.ItemsM_NRec /* nRegisters */, ac.ItemsM_RSiz /* registersSize */);
+            items = appendToExportList(items, tblManager.TBL_Reader2bpp, ac.ItemsR_Add, ac.ItemsR_NRec /* nRegisters */, ac.ItemsR_RSiz /* registersSize */);
 
-            if (items.Count == 280)
+            if (items.Count == ac.ItemsM_NRec + ac.ItemsR_NRec)
             {
                 System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
                 System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
@@ -2066,23 +2063,13 @@ namespace FF5e_Text_Editor
                 //0x273568, 24  regs, 13 bytes
                 List<long> addresses = new List<long>();
                 List<List<Byte>> bytesList = new List<List<byte>>();
-                br.BaseStream.Position = 0x111380 + headerOffset;
-                for (int i = 0; i < 256; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(9).ToList());
-                }
-                br.BaseStream.Position = 0x273568 + headerOffset;
-                for (int i = 0; i < 24; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(13).ToList());
-                }
+                appendToByteList(br, addresses, bytesList, ac.ItemsM_Add, ac.ItemsM_NRec, ac.ItemsM_RSiz);
+                appendToByteList(br, addresses, bytesList, ac.ItemsR_Add, ac.ItemsR_NRec, ac.ItemsR_RSiz);
 
                 br.Close();
                 fs.Close();
 
-                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector2bpp, addresses, bytesList, items, font2bppChars, 13);
+                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector2bpp, addresses, bytesList, items, font2bppChars, ac.ItemsR_RSiz);
                 form.ShowDialog();
                 form.Dispose();
             }
@@ -2095,12 +2082,12 @@ namespace FF5e_Text_Editor
             List<String> output = new List<String>();
 
             /* Characters */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x115500, 5 /* nRegisters */, 6 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Characters_Add, ac.Characters_NRec /* nRegisters */, ac.Characters_RSiz /* registersSize */);
 
             /* Characters */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x115600, 22 /* nRegisters */, 8 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.Jobs_Add, ac.Jobs_NRec /* nRegisters */, ac.Jobs_RSiz /* registersSize */);
 
-            if (output.Count == 27)
+            if (output.Count == ac.Characters_NRec + ac.Jobs_NRec)
             {
                 CSV_Manager.exportCSV("Characters", output);
             }
@@ -2113,10 +2100,11 @@ namespace FF5e_Text_Editor
             List<String> characters = new List<String>();
 
             /* Characters */
-            characters = appendToExportList(characters, tblManager.TBL_Reader2bpp, 0x115500, 5 /* nRegisters */, 6 /* registersSize */);
-            characters = appendToExportList(characters, tblManager.TBL_Reader2bpp, 0x115600, 22 /* nRegisters */, 8 /* registersSize */);
+            characters = appendToExportList(characters, tblManager.TBL_Reader2bpp, ac.Characters_Add, ac.Characters_NRec /* nRegisters */, ac.Characters_RSiz /* registersSize */);
+            characters = appendToExportList(characters, tblManager.TBL_Reader2bpp, ac.Jobs_Add, ac.Jobs_NRec /* nRegisters */, ac.Jobs_RSiz /* registersSize */);
 
-            if (characters.Count == 27)
+
+            if (characters.Count == ac.Characters_NRec + ac.Jobs_NRec)
             {
                 System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
                 System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
@@ -2126,26 +2114,15 @@ namespace FF5e_Text_Editor
                 //0x115600, 22 regs, 8 bytes
                 List<long> addresses = new List<long>();
                 List<List<Byte>> bytesList = new List<List<byte>>();
-                br.BaseStream.Position = 0x115500 + headerOffset;
-                for (int i = 0; i < 5; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(6).ToList());
-                }
-                br.BaseStream.Position = 0x115600 + headerOffset;
-                for (int i = 0; i < 22; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(8).ToList());
-                }
+                appendToByteList(br, addresses, bytesList, ac.Characters_Add, ac.Characters_NRec, ac.Characters_RSiz);
+                appendToByteList(br, addresses, bytesList, ac.Jobs_Add, ac.Jobs_NRec, ac.Jobs_RSiz);
 
                 br.Close();
                 fs.Close();
 
-                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector2bpp, addresses, bytesList, characters, font2bppChars, 8);
+                Form5 form = new Form5(fileUnderEdition, headerOffset, tblManager.TBL_Injector2bpp, addresses, bytesList, characters, font2bppChars, ac.Jobs_RSiz);
                 form.ShowDialog();
                 form.Dispose();
-
             }
         }
 
@@ -2156,15 +2133,15 @@ namespace FF5e_Text_Editor
             List<String> output = new List<String>();
 
             /* Battle records */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x275800, 5 /* nRegisters */, 17 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.ConceptsBatR_Add, ac.ConceptsBatR_NRec /* nRegisters */, ac.ConceptsBatR_RSiz /* registersSize */);
 
             /* Shop names */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x112D00, 8 /* nRegisters */, 8 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.ConceptsShop_Add, ac.ConceptsShop_NRec /* nRegisters */, ac.ConceptsShop_RSiz /* registersSize */);
 
             /* Concepts */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x1128B6, 24 /* nRegisters */, 8 /* registersSize */);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.ConceptsSMisc_Add, ac.ConceptsMisc_NRec /* nRegisters */, ac.ConceptsMisc_RSiz /* registersSize */);
 
-            if (output.Count == 37)
+            if (output.Count == ac.ConceptsBatR_NRec + ac.ConceptsShop_NRec + ac.ConceptsMisc_NRec)
             {
                 CSV_Manager.exportCSV("FConcepts", output);
             }
@@ -2177,11 +2154,11 @@ namespace FF5e_Text_Editor
             List<String> concepts = new List<String>();
 
             /* Concepts */
-            concepts = appendToExportList(concepts, tblManager.TBL_Reader2bpp, 0x112D00, 8 /* nRegisters */, 8 /* registersSize */);
-            concepts = appendToExportList(concepts, tblManager.TBL_Reader2bpp, 0x1128B6, 24 /* nRegisters */, 8 /* registersSize */);
-            concepts = appendToExportList(concepts, tblManager.TBL_Reader2bpp, 0x275800, 5 /* nRegisters */, 17 /* registersSize */);
+            concepts = appendToExportList(concepts, tblManager.TBL_Reader2bpp, ac.ConceptsBatR_Add, ac.ConceptsBatR_NRec /* nRegisters */, ac.ConceptsBatR_RSiz /* registersSize */);
+            concepts = appendToExportList(concepts, tblManager.TBL_Reader2bpp, ac.ConceptsShop_Add, ac.ConceptsShop_NRec /* nRegisters */, ac.ConceptsShop_RSiz /* registersSize */);
+            concepts = appendToExportList(concepts, tblManager.TBL_Reader2bpp, ac.ConceptsSMisc_Add, ac.ConceptsMisc_NRec /* nRegisters */, ac.ConceptsMisc_RSiz /* registersSize */);
 
-            if (concepts.Count == 37)
+            if (concepts.Count == ac.ConceptsBatR_NRec + ac.ConceptsShop_NRec + ac.ConceptsMisc_NRec)
             {
                 System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
                 System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
@@ -2192,23 +2169,10 @@ namespace FF5e_Text_Editor
                 //0x275800, 5  regs, 17 bytes
                 List<long> addresses = new List<long>();
                 List<List<Byte>> bytesList = new List<List<byte>>();
-                br.BaseStream.Position = 0x112D00 + headerOffset;
-                for (int i = 0; i < 8; i++){
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(8).ToList());
-                }
-                br.BaseStream.Position = 0x1128B6 + headerOffset;
-                for (int i = 0; i < 24; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(8).ToList());
-                }
-                br.BaseStream.Position = 0x275800 + headerOffset;
-                for (int i = 0; i < 5; i++)
-                {
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-                    bytesList.Add(br.ReadBytes(17).ToList());
-                }
+                appendToByteList(br, addresses, bytesList, ac.ConceptsBatR_Add, ac.ConceptsBatR_NRec, ac.ConceptsBatR_RSiz);
+                appendToByteList(br, addresses, bytesList, ac.ConceptsShop_Add, ac.ConceptsShop_NRec, ac.ConceptsShop_RSiz);
+                appendToByteList(br, addresses, bytesList, ac.ConceptsSMisc_Add, ac.ConceptsMisc_NRec, ac.ConceptsMisc_RSiz);
+
                 br.Close();
                 fs.Close();
 
@@ -2356,7 +2320,7 @@ namespace FF5e_Text_Editor
 
             try
             {
-                br.BaseStream.Position = 0x2773A0 + headerOffset;
+                br.BaseStream.Position = ac.PoemOfLight_Add + headerOffset;
 
                 Byte   newByte = br.ReadByte();
                 String newLine = "";
@@ -2387,13 +2351,12 @@ namespace FF5e_Text_Editor
 
             /* Battle Speech */
             /* 3B00 + 5632 bytes */
-            output = appendToExportList(output, tblManager.TBL_Reader1bpp, 0x10F000, 0x270000, 234, 0x00);
+            output = appendToExportList(output, tblManager.TBL_Reader1bpp, ac.BatSpeech_OffAdd, ac.BatSpeech_Add, ac.BatSpeech_NRec, 0x00);
 
-            if (output.Count == 234)
+            if (output.Count == ac.BatSpeech_NRec)
             {
                 CSV_Manager.exportCSV("BattleSpeech", output);
             }
-
         }
 
 
@@ -2405,42 +2368,18 @@ namespace FF5e_Text_Editor
             
             List<String> battleSpeech = new List<String>();
 
-            battleSpeech = appendToExportList(battleSpeech, tblManager.TBL_Reader1bpp, 0x10F000, 0x270000, 234, 0x00);
+            battleSpeech = appendToExportList(battleSpeech, tblManager.TBL_Reader1bpp, ac.BatSpeech_OffAdd, ac.BatSpeech_Add, ac.BatSpeech_NRec, 0x00);
 
-            if (battleSpeech.Count == 234)
+            if (battleSpeech.Count == ac.BatSpeech_NRec)
             {
                 System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
                 System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
 
                 //0x10F000, 0x270000, 234regs, XX
-                long nextAddressToRead = 0x10F000 + headerOffset;
-                int offset = 0;
-                int nextOffset = 0;
-                int size = 0;
                 int maxSize = 0;
                 List<long> addresses = new List<long>();
                 List<List<Byte>> bytesList = new List<List<byte>>();
-
-                br.BaseStream.Position = nextAddressToRead;
-                offset = br.ReadByte() + (br.ReadByte() * 0x0100);
-                nextAddressToRead = br.BaseStream.Position;
-                addresses.Add(br.BaseStream.Position - headerOffset);
-
-                for (int i = 0; i < 234; i++)
-                {
-                    br.BaseStream.Position = nextAddressToRead;
-                    nextOffset = br.ReadByte() + (br.ReadByte() * 0x0100);
-                    nextAddressToRead = br.BaseStream.Position;
-
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-
-                    br.BaseStream.Position = offset + 0x270000 + headerOffset;
-                    size = Math.Max(nextOffset - offset, 1);
-                    if (size > maxSize) maxSize = size;
-                    bytesList.Add(br.ReadBytes(size).ToList());
-
-                    offset = nextOffset;
-                }
+                appendVWTableToByteList(br, addresses, bytesList, ac.BatSpeech_OffAdd, ac.BatSpeech_Add, ac.BatSpeech_NRec, ref maxSize);
 
                 br.Close();
                 fs.Close();
@@ -2470,9 +2409,9 @@ namespace FF5e_Text_Editor
 
             /* Battle Speech */
             /* 2760 + 1646 bytes */
-            output = appendToExportList(output, tblManager.TBL_Reader1bpp, 0x1139A9, 0x270000, 81, 0x00, false, 0x10);
+            output = appendToExportList(output, tblManager.TBL_Reader1bpp, ac.BatMessages_OffAdd, ac.BatMessages_Add, ac.BatMessages_NRec, 0x00, false, 0x10);
 
-            if (output.Count == 81)
+            if (output.Count == ac.BatMessages_NRec)
             {
                 CSV_Manager.exportCSV("BattleMessages", output);
             }
@@ -2488,44 +2427,20 @@ namespace FF5e_Text_Editor
 
             List<String> battleMsg = new List<String>();
 
-            battleMsg = appendToExportList(battleMsg, tblManager.TBL_Reader1bpp, 0x1139A9, 0x270000, 81, 0x00);
+            battleMsg = appendToExportList(battleMsg, tblManager.TBL_Reader1bpp, ac.BatMessages_OffAdd, ac.BatMessages_Add, ac.BatMessages_NRec, 0x00);
             //battleSpeech = appendToExportList(battleSpeech, tblManager.TBL_Reader1bpp, 0x10F000, 0x270000, 234, 0x00);
 
-            if (battleMsg.Count == 81)
+            if (battleMsg.Count == ac.BatMessages_NRec)
             {
                 System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
                 System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
 
                 // Locations
                 //0x1139A9, 0x270000, 81regs, XX
-                long nextAddressToRead = 0x1139A9 + headerOffset;
-                int offset = 0;
-                int nextOffset = 0;
-                int size = 0;
                 int maxSize = 0;
                 List<long> addresses = new List<long>();
                 List<List<Byte>> bytesList = new List<List<byte>>();
-
-                br.BaseStream.Position = nextAddressToRead;
-                offset = br.ReadByte() + (br.ReadByte() * 0x0100);
-                nextAddressToRead = br.BaseStream.Position;
-                addresses.Add(br.BaseStream.Position - headerOffset);
-
-                for (int i = 0; i < 81; i++)
-                {
-                    br.BaseStream.Position = nextAddressToRead;
-                    nextOffset = br.ReadByte() + (br.ReadByte() * 0x0100);
-                    nextAddressToRead = br.BaseStream.Position;
-
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-
-                    br.BaseStream.Position = offset + 0x270000 + headerOffset;
-                    size = Math.Max(nextOffset - offset, 1);
-                    if (size > maxSize) maxSize = size;
-                    bytesList.Add(br.ReadBytes(size).ToList());
-
-                    offset = nextOffset;
-                }
+                appendVWTableToByteList(br, addresses, bytesList, ac.BatMessages_OffAdd, ac.BatMessages_Add, ac.BatMessages_NRec, ref maxSize);
 
                 br.Close();
                 fs.Close();
@@ -2555,9 +2470,9 @@ namespace FF5e_Text_Editor
 
             /* Item descriptions */
             /* 5200 + 1470 bytes */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x275100, 0x270000, 128, 0x00);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.ItemDesc_OffAdd, ac.ItemDesc_Add, ac.ItemDesc_NRec, 0x00);
 
-            if (output.Count == 128)
+            if (output.Count == ac.ItemDesc_NRec)
             {
                 CSV_Manager.exportCSV("ItemDescriptions", output);
             }
@@ -2571,9 +2486,9 @@ namespace FF5e_Text_Editor
 
             /* Jobs descriptions */
             /* 724A + 3414 bytes */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x117140, 0x110000, 133, 0x00);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.JobDesc_OffAdd, ac.JobDesc_Add, ac.JobDesc_NRec, 0x00);
 
-            if (output.Count == 133)
+            if (output.Count == ac.JobDesc_NRec)
             {
                 CSV_Manager.exportCSV("JobsDescriptions", output);
             }
@@ -2587,9 +2502,9 @@ namespace FF5e_Text_Editor
 
             /* Locations */
             /* 0000 + 2304 bytes */
-            output = appendToExportListSU(output, tblManager.TBL_Reader1bpp, 0x107000, 0x270000, 164);
+            output = appendToExportListSU(output, tblManager.TBL_Reader1bpp, ac.Locations_OffAdd, ac.Locations_Add, ac.Locations_NRec);
 
-            if (output.Count == 164)
+            if (output.Count == ac.Locations_NRec)
             {
                 CSV_Manager.exportCSV("Locations", output);
             }
@@ -2602,7 +2517,7 @@ namespace FF5e_Text_Editor
             List<String> locations = new List<String>();
 
             /* Monster attacks names */
-            locations = appendToExportListSU(locations, tblManager.TBL_Reader1bpp, 0x107000, 0x270000, 164);
+            locations = appendToExportListSU(locations, tblManager.TBL_Reader1bpp, ac.Locations_OffAdd, ac.Locations_Add, ac.Locations_NRec);
             //monsterAttacks = appendToExportList(monsterAttacks, tblManager.TBL_Reader1bpp, 0x273700, 64 /* nRegisters */, 16 /* registersSize */);
 
             if (locations.Count == 164)
@@ -2612,34 +2527,10 @@ namespace FF5e_Text_Editor
 
                 // Locations
                 //0x107000, 0x270000, 164regs, XX
-                long nextAddressToRead = 0x107000 + headerOffset;
-                int  offset = 0;
-                int  nextOffset = 0;
-                int  size = 0;
                 int  maxSize = 0;
                 List<long> addresses = new List<long>();
                 List<List<Byte>> bytesList = new List<List<byte>>();
-
-                br.BaseStream.Position = nextAddressToRead;
-                offset = br.ReadByte() + (br.ReadByte() * 0x0100);
-                nextAddressToRead = br.BaseStream.Position;
-                addresses.Add(br.BaseStream.Position - headerOffset);
-
-                for (int i = 0; i < 164; i++)
-                {
-                    br.BaseStream.Position = nextAddressToRead;
-                    nextOffset = br.ReadByte() + (br.ReadByte() * 0x0100);
-                    nextAddressToRead = br.BaseStream.Position;
-
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-
-                    br.BaseStream.Position = offset + 0x270000 + headerOffset;
-                    size = Math.Max(nextOffset - offset, 1);
-                    if (size > maxSize) maxSize = size;
-                    bytesList.Add(br.ReadBytes(size).ToList());
-
-                    offset = nextOffset;
-                }
+                appendVWTableToByteList(br, addresses, bytesList, ac.Locations_OffAdd, ac.Locations_Add, ac.Locations_NRec, ref maxSize);
 
                 br.Close();
                 fs.Close();
@@ -2669,9 +2560,9 @@ namespace FF5e_Text_Editor
 
             /* Concepts */
             /* 2F00 + 1632 bytes */
-            output = appendToExportList(output, tblManager.TBL_Reader2bpp, 0x00F987, 0x270000, 139, 0x00);
+            output = appendToExportList(output, tblManager.TBL_Reader2bpp, ac.ConceptsV_OffAdd, ac.ConceptsV_Add, ac.ConceptsV_NRec, 0x00);
 
-            if (output.Count == 139)
+            if (output.Count == ac.ConceptsV_NRec)
             {
                 CSV_Manager.exportCSV("VConcepts", output);
             }
@@ -2687,44 +2578,20 @@ namespace FF5e_Text_Editor
             List<String> concepts = new List<String>();
 
             /* Monster attacks names */
-            concepts = appendToExportList(concepts, tblManager.TBL_Reader2bpp, 0x00F987, 0x270000, 139, 0x00);
+            concepts = appendToExportList(concepts, tblManager.TBL_Reader2bpp, ac.ConceptsV_OffAdd, ac.ConceptsV_Add, ac.ConceptsV_NRec, 0x00);
             //locations = appendToExportListSU(locations, tblManager.TBL_Reader1bpp, 0x107000, 0x270000, 164);
 
-            if (concepts.Count == 139)
+            if (concepts.Count == ac.ConceptsV_NRec)
             {
                 System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
                 System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
 
                 // Locations
                 //0x00F987, 0x270000, 139regs, XX
-                long nextAddressToRead = 0x00F987 + headerOffset;
-                int offset = 0;
-                int nextOffset = 0;
-                int size = 0;
                 int maxSize = 0;
                 List<long> addresses = new List<long>();
                 List<List<Byte>> bytesList = new List<List<byte>>();
-
-                br.BaseStream.Position = nextAddressToRead;
-                offset = br.ReadByte() + (br.ReadByte() * 0x0100);
-                nextAddressToRead = br.BaseStream.Position;
-                addresses.Add(br.BaseStream.Position - headerOffset);
-
-                for (int i = 0; i < 139; i++)
-                {
-                    br.BaseStream.Position = nextAddressToRead;
-                    nextOffset = br.ReadByte() + (br.ReadByte() * 0x0100);
-                    nextAddressToRead = br.BaseStream.Position;
-
-                    addresses.Add(br.BaseStream.Position - headerOffset);
-
-                    br.BaseStream.Position = offset + 0x270000 + headerOffset;
-                    size = Math.Max(nextOffset - offset, 1);
-                    if (size > maxSize) maxSize = size;
-                    bytesList.Add(br.ReadBytes(size).ToList());
-
-                    offset = nextOffset;
-                }
+                appendVWTableToByteList(br, addresses, bytesList, ac.ConceptsV_OffAdd, ac.ConceptsV_Add, ac.ConceptsV_NRec, ref maxSize);
 
                 br.Close();
                 fs.Close();
@@ -2746,9 +2613,9 @@ namespace FF5e_Text_Editor
             /* 21/0000 + 393216 bytes */
             /* Take care about the last bytes of every bank. A speech cannot be splited */
 
-            output = appendToExportList(output, tblManager.TBL_Reader1bpp, 0x2013F0, 0x210000, 2160, 0x00, true);
+            output = appendToExportList(output, tblManager.TBL_Reader1bpp, ac.Speech_OffAdd, ac.Speech_Add, ac.Speech_NRec, 0x00, ac.SpeechPtrs);
 
-            if (output.Count == 2160)
+            if (output.Count == ac.Speech_NRec)
             {
                 CSV_Manager.exportCSV("Speech", output);
             }
@@ -2765,7 +2632,7 @@ namespace FF5e_Text_Editor
             /* Speech */
             /* 21/0000 + 393216 bytes */
             /* Take care about the last bytes of every bank. A speech cannot be splited */
-            list = appendToExportList(list, tblManager.TBL_Reader1bpp, 0x2013F0, 0x210000, 2160, 0x00, true);
+            list = appendToExportList(list, tblManager.TBL_Reader1bpp, ac.Speech_OffAdd, ac.Speech_Add, ac.Speech_NRec, 0x00, ac.SpeechPtrs);
             current = list[currentValue];
             current = current.Replace(tblManager.TBL_Reader1bpp[0x01], "\r\n");
 
@@ -2779,7 +2646,7 @@ namespace FF5e_Text_Editor
                 list[(int)numericUpDownIdSpeech.Value] = current;
                 /* Speech */
                 /* 0xE10000 + 0x060000 bytes */
-                ImportVariableSizeTable(list, tblManager.TBL_Injector1bpp, 0x2013F0, 0x210000, 2160, 0x050000, true, 0x00, true, true);
+                ImportVariableSizeTable(list, tblManager.TBL_Injector1bpp, ac.Speech_OffAdd, ac.Speech_Add, ac.Speech_NRec, ac.Speech_AvailB, true, 0x00, ac.SpeechPtrs, true);
 
                 numericUpDownIdSpeech_ValueChanged(null, null);
                 panelMainSpeech.Refresh();
@@ -2865,7 +2732,7 @@ namespace FF5e_Text_Editor
 
             List<Byte> compressed = Compressor.compress(first, progressBarCompress, 0x07DE, 0x0800);
             int listSize = compressed.Count;
-            int maxSize = 0x2B7;
+            int maxSize = ac.Credits_AvailB;
             compressed.Insert(0, secondSizeByte);
             compressed.Insert(0, firstSizeByte);
 
@@ -2886,7 +2753,7 @@ namespace FF5e_Text_Editor
             }
 
             /* Everything OK. Inject data. */
-            injectOn(new List<List<Byte>>() { compressed }, 0x037B93);
+            injectOn(new List<List<Byte>>() { compressed }, ac.Credits_Add + 1);
         }
 
 
@@ -2935,7 +2802,7 @@ namespace FF5e_Text_Editor
 
             List<Byte> compressed = Compressor.compress(first, progressBarCompress, 0x07DE, 0x0800);
             int listSize = compressed.Count;
-            int maxSize = 0x20F;
+            int maxSize = ac.Staff_AvailB;
             compressed.Insert(0, secondSizeByte);
             compressed.Insert(0, firstSizeByte);
 
@@ -2956,7 +2823,7 @@ namespace FF5e_Text_Editor
             }
 
             /* Everything OK. Inject data. */
-            injectOn(new List<List<Byte>>() { compressed }, 0x03362C);
+            injectOn(new List<List<Byte>>() { compressed }, ac.Staff_Add + 1);
         }
 
 
@@ -2980,7 +2847,7 @@ namespace FF5e_Text_Editor
             System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
             System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
 
-            List<Byte> staffFont4bpp = Compressor.uncompress(0x0333F6, br, headerOffset);
+            List<Byte> staffFont4bpp = Compressor.uncompress(ac.StaffFont_Add, br, headerOffset);
 
             br.Close();
             fs.Close();
@@ -3053,14 +2920,14 @@ namespace FF5e_Text_Editor
             /* Staff font */
             /* C3/33F6, Compressed 02, 00, 08 */
             /* C3/362A, Table size <= 0x0234 */
-            if (newBytes.Count <= 0x0235)
+            if (newBytes.Count <= ac.StaffFont_AvailB)
             {
-                injectOn(new List<List<Byte>>() { newBytes }, 0x0333F6);
+                injectOn(new List<List<Byte>>() { newBytes }, ac.StaffFont_Add);
             }
             else
             {
                 MessageBox.Show("The file is too big:\r\n\r\nThe file is " + newBytes.Count +
-                                " bytes long.\r\n565 bytes long were expected.",
+                                " bytes long.\r\n" + ac.StaffFont_AvailB + " bytes long were expected.",
                                 "Invalid file");
             }
         }
@@ -3141,7 +3008,7 @@ namespace FF5e_Text_Editor
             System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
             System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
 
-            List<Byte> input = Compressor.uncompress(0x037B92, br, headerOffset);
+            List<Byte> input = Compressor.uncompress(ac.Credits_Add, br, headerOffset);
 
             br.Close();
             fs.Close();
@@ -3194,7 +3061,7 @@ namespace FF5e_Text_Editor
             System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
             System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
 
-            List<Byte> dragon4bpp = Compressor.uncompress(0x032D22, br, headerOffset);
+            List<Byte> dragon4bpp = Compressor.uncompress(ac.Dragon4bpp_Add, br, headerOffset);
 
             br.Close();
             fs.Close();
@@ -3230,7 +3097,7 @@ namespace FF5e_Text_Editor
             //return;
             //Dummy.mapDecypher(br, headerOffset, 0x0F);
 
-            List<Byte> theEnd = Compressor.uncompress(0x10E4CB, br, headerOffset, true);
+            List<Byte> theEnd = Compressor.uncompress(ac.TheEnd4bpp_Add, br, headerOffset, true);
 
             br.Close();
             fs.Close();
@@ -3280,7 +3147,7 @@ namespace FF5e_Text_Editor
 
                         int nColumns = (int)Math.Truncate(128.0 / 8);
                         size = (size - (size % ((8 * nColumns) * 8)));
-                        if (size == 0x001200 * 2)
+                        if (size == ac.Dragon4bpp_SizeB * 2)
                             newBytes = InvertingTransformations.import4bpp(bitmapPixels, 8, 8, size);
                         else
                             newBytes = new List<Byte>();
@@ -3302,14 +3169,14 @@ namespace FF5e_Text_Editor
             newBytes.Insert(0, 0x00);
             newBytes.Insert(0, 0x02);
 
-            if (newBytes.Count <= 0x05FD)
+            if (newBytes.Count <= ac.Dragon4bpp_AvailB)
             {
-                injectOn(new List<List<Byte>>() { newBytes }, 0x032D23);
+                injectOn(new List<List<Byte>>() { newBytes }, ac.Dragon4bpp_Add);
             }
             else
             {
                 MessageBox.Show("The file is too big:\r\n\r\nThe file is " + newBytes.Count +
-                                " bytes long.\r\n1533 bytes long were expected.",
+                                " bytes long.\r\n" + ac.Dragon4bpp_AvailB + " bytes long were expected.",
                                 "Invalid file");
             }
         }
@@ -3353,7 +3220,7 @@ namespace FF5e_Text_Editor
 
                         int nColumns = (int)Math.Truncate(128.0 / 8);
                         size = (size - (size % ((8 * nColumns) * 8)));
-                        if (size == 0x001000 * 2)
+                        if (size == ac.TheEnd4bpp_SizeB * 2)
                             newBytes = InvertingTransformations.import4bpp(bitmapPixels, 8, 8, size);
                         else
                             newBytes = new List<Byte>();
@@ -3374,14 +3241,14 @@ namespace FF5e_Text_Editor
             newBytes.Insert(0, 0x10);
             newBytes.Insert(0, 0x00);
 
-            if (newBytes.Count <= 0x071A)
+            if (newBytes.Count <= ac.TheEnd4bpp_AvailB)
             {
-                injectOn(new List<List<Byte>>() { newBytes }, 0x10E4CB);
+                injectOn(new List<List<Byte>>() { newBytes }, ac.TheEnd4bpp_Add);
             }
             else
             {
                 MessageBox.Show("The file is too big:\r\n\r\nThe file is " + newBytes.Count +
-                                " bytes long.\r\n1818 bytes long were expected.",
+                                " bytes long.\r\n" + ac.TheEnd4bpp_AvailB + " bytes long were expected.",
                                 "Invalid file");
             }
         }
@@ -3661,7 +3528,7 @@ namespace FF5e_Text_Editor
                 return;
 
             /* Monster names */
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x200050, 384, 10, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Monster_Add, ac.Monster_NRec, ac.Monster_RSiz, 0xFF);
         }
 
 
@@ -3674,7 +3541,7 @@ namespace FF5e_Text_Editor
                 return;
 
             /* Monster Attacks */
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector1bpp, 0x273700, 64, 16, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector1bpp, ac.MonAttakcs_Add, ac.MonAttakcs_NRec, ac.MonAttakcs_RSiz, 0xFF);
         }
 
 
@@ -3686,22 +3553,26 @@ namespace FF5e_Text_Editor
             if (inputStr.Count == 0)
                 return;
 
-            if (inputStr.Count < 294)
+            if (inputStr.Count < ac.SkillsM01_NRec + ac.SkillsM02_NRec + ac.SkillsMBl_NRec + ac.SkillsMSo_NRec)
             {
                 return;
             }
 
             /* SkillsM 01 */
-            ImportFixedSizeTable(inputStr.GetRange(0, 87), tblManager.TBL_Injector2bpp, 0x111C80, 87, 6, 0xFF);
+            int nextRecord = 0;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.SkillsM01_NRec), tblManager.TBL_Injector2bpp, ac.SkillsM01_Add, ac.SkillsM01_NRec, ac.SkillsM01_RSiz, 0xFF);
 
             /* SkillsM 02 */
-            ImportFixedSizeTable(inputStr.GetRange(87, 169), tblManager.TBL_Injector2bpp, 0x270F90, 169, 12, 0xFF, true);
+            nextRecord += ac.SkillsM01_NRec;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.SkillsM02_NRec), tblManager.TBL_Injector2bpp, ac.SkillsM02_Add, ac.SkillsM02_NRec, ac.SkillsM02_RSiz, 0xFF, true);
 
             /* SkillsM Blue */
-            ImportFixedSizeTable(inputStr.GetRange(256, 30), tblManager.TBL_Injector2bpp, 0x11200D, 30, 9, 0xFF);	
+            nextRecord += ac.SkillsM02_NRec;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.SkillsMBl_NRec), tblManager.TBL_Injector2bpp, ac.SkillsMBl_Add, ac.SkillsMBl_NRec, ac.SkillsMBl_RSiz, 0xFF);
 
             /* SkillsM Songs */
-            ImportFixedSizeTable(inputStr.GetRange(286, 8), tblManager.TBL_Injector2bpp, 0x111E8A, 8, 9, 0xFF, true);
+            nextRecord += ac.SkillsMBl_NRec;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.SkillsMSo_NRec), tblManager.TBL_Injector2bpp, ac.SkillsMSo_Add, ac.SkillsMSo_NRec, ac.SkillsMSo_RSiz, 0xFF, true);
         }
 
 
@@ -3713,16 +3584,18 @@ namespace FF5e_Text_Editor
             if (inputStr.Count == 0)
                 return;
 
-            if (inputStr.Count < 274)
+            if (inputStr.Count < ac.SkillsB01_NRec + ac.SkillsB02_NRec)
             {
                 return;
             }
 
             /* SkillsB */
-            ImportFixedSizeTable(inputStr.GetRange(0, 105), tblManager.TBL_Injector1bpp, 0x270900, 105, 16, 0xFF);
+            int nextRecord = 0;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.SkillsB01_NRec), tblManager.TBL_Injector1bpp, ac.SkillsB01_Add, ac.SkillsB01_NRec, ac.SkillsB01_RSiz, 0xFF);
 
             /* SkillsB 02 */
-            ImportFixedSizeTable(inputStr.GetRange(105, 169), tblManager.TBL_Injector1bpp, 0x271780, 169, 24, 0xFF);
+            nextRecord += ac.SkillsB01_NRec;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.SkillsB02_NRec), tblManager.TBL_Injector1bpp, ac.SkillsB02_Add, ac.SkillsB02_NRec, ac.SkillsB02_RSiz, 0xFF);
         }
 
 
@@ -3734,19 +3607,22 @@ namespace FF5e_Text_Editor
             if (inputStr.Count == 0)
                 return;
 
-            if (inputStr.Count < 161)
+            if (inputStr.Count < ac.Commands_NRec + ac.AbilitiesM_NRec + ac.AbilitiesB_NRec)
             {
                 return;
             }
 
             /* Commands */
-            ImportFixedSizeTable(inputStr.GetRange(0, 95), tblManager.TBL_Injector2bpp, 0x201150, 95, 7, 0xFF);
+            int nextRecord = 0;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.Commands_NRec), tblManager.TBL_Injector2bpp, ac.Commands_Add, ac.Commands_NRec, ac.Commands_RSiz, 0xFF);
 
             /* Abilities (menu) */
-            ImportFixedSizeTable(inputStr.GetRange(95, 33), tblManager.TBL_Injector2bpp, 0x116200, 33, 8, 0xFF);
+            nextRecord += ac.Commands_NRec;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.AbilitiesM_NRec), tblManager.TBL_Injector2bpp, ac.AbilitiesM_Add, ac.AbilitiesM_NRec, ac.AbilitiesM_RSiz, 0xFF);
 
             /* Abilities (Battle) */
-            ImportFixedSizeTable(inputStr.GetRange(128, 33), tblManager.TBL_Injector1bpp, 0x277060, 33, 24, 0xFF);	
+            nextRecord += ac.AbilitiesM_NRec;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.AbilitiesB_NRec), tblManager.TBL_Injector1bpp, ac.AbilitiesB_Add, ac.AbilitiesB_NRec, ac.AbilitiesB_RSiz, 0xFF);	
         }
 
 
@@ -3758,24 +3634,25 @@ namespace FF5e_Text_Editor
             if (inputStr.Count == 0)
                 return;
 
-            if (inputStr.Count < 536)
-            {
+            if (inputStr.Count < ac.ItemsM_NRec + ac.ItemsR_NRec + ac.ItemsB_NRec)
                 return;
-            }
 
             /* Fix the blanks translating them to 0xFF */
-            for(int i = 0 ; i < 256 ; i++){
+            for(int i = 0 ; i < ac.ItemsM_NRec; i++){
                 inputStr[i] = inputStr[i].Replace(" ", "[FF]");
             }
 
             /* Items (menu) */
-            ImportFixedSizeTable(inputStr.GetRange(0, 256), tblManager.TBL_Injector2bpp, 0x111380, 256, 9, 0xFF);
+            int nextRecord = 0;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.ItemsM_NRec), tblManager.TBL_Injector2bpp, ac.ItemsM_Add, ac.ItemsM_NRec, ac.ItemsM_RSiz, 0xFF);
 
             /* Rare items (menu) */
-            ImportFixedSizeTable(inputStr.GetRange(256, 24), tblManager.TBL_Injector2bpp, 0x273568, 24, 13, 0xFF);
+            nextRecord += ac.ItemsM_NRec;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.ItemsR_NRec), tblManager.TBL_Injector2bpp, ac.ItemsR_Add, ac.ItemsR_NRec, ac.ItemsR_RSiz, 0xFF);
 
             /* Items (battle) */
-            ImportFixedSizeTable(inputStr.GetRange(280, 256), tblManager.TBL_Injector1bpp, 0x275860, 256, 24, 0xFF);
+            nextRecord += ac.ItemsR_NRec;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.ItemsB_NRec), tblManager.TBL_Injector1bpp, ac.ItemsB_Add, ac.ItemsB_NRec, ac.ItemsB_RSiz, 0xFF);
         }
 
 
@@ -3787,16 +3664,16 @@ namespace FF5e_Text_Editor
             if (inputStr.Count == 0)
                 return;
 
-            if (inputStr.Count < 27)
-            {
+            if (inputStr.Count < ac.Characters_NRec + ac.Jobs_NRec)
                 return;
-            }
 
             /* Characters */
-            ImportFixedSizeTable(inputStr.GetRange(0, 5), tblManager.TBL_Injector2bpp, 0x115500, 5, 6, 0xFF);
+            int nextRecord = 0;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.Characters_NRec), tblManager.TBL_Injector2bpp, ac.Characters_Add, ac.Characters_NRec, ac.Characters_RSiz, 0xFF);
 
             /* Characters */
-            ImportFixedSizeTable(inputStr.GetRange(5, 22), tblManager.TBL_Injector2bpp, 0x115600, 22, 8, 0xFF);
+            nextRecord += ac.Characters_NRec;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.Jobs_NRec), tblManager.TBL_Injector2bpp, ac.Jobs_Add, ac.Jobs_NRec, ac.Jobs_RSiz, 0xFF);
         }
 
 
@@ -3808,19 +3685,20 @@ namespace FF5e_Text_Editor
             if (inputStr.Count == 0)
                 return;
 
-            if (inputStr.Count < 37)
-            {
+            if (inputStr.Count < ac.ConceptsBatR_NRec + ac.ConceptsShop_NRec + ac.ConceptsMisc_NRec)
                 return;
-            }
 
             /* Battle records */
-            ImportFixedSizeTable(inputStr.GetRange(0, 4), tblManager.TBL_Injector2bpp, 0x275800, 5, 17, 0xFF);
+            int nextRecord = 0;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.ConceptsBatR_NRec), tblManager.TBL_Injector2bpp, ac.ConceptsBatR_Add, ac.ConceptsBatR_NRec, ac.ConceptsBatR_RSiz, 0xFF);
 
             /* Shop names */
-            ImportFixedSizeTable(inputStr.GetRange(4, 8), tblManager.TBL_Injector2bpp, 0x112D00, 8, 8, 0xFF);
+            nextRecord += ac.ConceptsBatR_NRec;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.ConceptsShop_NRec), tblManager.TBL_Injector2bpp, ac.ConceptsShop_Add, ac.ConceptsShop_NRec, ac.ConceptsShop_RSiz, 0xFF);
 
             /* Concepts */
-            ImportFixedSizeTable(inputStr.GetRange(12, 24), tblManager.TBL_Injector2bpp, 0x1128B6, 24, 8, 0xFF);
+            nextRecord += ac.ConceptsShop_NRec;
+            ImportFixedSizeTable(inputStr.GetRange(nextRecord, ac.ConceptsMisc_NRec), tblManager.TBL_Injector2bpp, ac.ConceptsSMisc_Add, ac.ConceptsMisc_NRec, ac.ConceptsMisc_RSiz, 0xFF);
         }
 
 
@@ -3856,7 +3734,7 @@ namespace FF5e_Text_Editor
 
             /* Battle Speech */
             /* 3B00 + 5632 bytes */
-            ImportBattleSpeechTable(inputStr, tblManager.TBL_Injector1bpp, 0x10F000, 0x273B00, 234, 5632);
+            ImportBattleSpeechTable(inputStr, tblManager.TBL_Injector1bpp, ac.BatSpeech_OffAdd, ac.BatSpeech_Add + ac.BatSpeech_IniOff, ac.BatSpeech_NRec, ac.BatSpeech_AvailB);
         }
 
 
@@ -3872,7 +3750,7 @@ namespace FF5e_Text_Editor
 
             /* Battle Speech */
             /* 2760 + 1646 bytes */
-            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector1bpp, 0x1139A9, 0x272760, 81, 1646);
+            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector1bpp, ac.BatMessages_OffAdd, ac.BatMessages_Add + ac.BatMessages_IniOff, ac.BatMessages_NRec, ac.BatMessages_AvailB);
         }
 
 
@@ -3888,8 +3766,10 @@ namespace FF5e_Text_Editor
 
             /* Item descriptions */
             /* 5200 + 1470 bytes */
-            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x275100, 0x275200, 128, 1470);
-            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x114000, 0x114100, 128, 1470);
+            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.ItemDesc_OffAdd, ac.ItemDesc_Add + ac.ItemDesc_IniOff, ac.ItemDesc_NRec, ac.ItemDesc_AvailB);
+
+            if(ac.ItemDes2_OffAdd > 0x00)
+                ImportVariableSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.ItemDes2_OffAdd, ac.ItemDes2_Add + ac.ItemDes2_IniOff, ac.ItemDesc_NRec, ac.ItemDesc_AvailB);
         }
 
 
@@ -3909,7 +3789,7 @@ namespace FF5e_Text_Editor
 
             /* Jobs descriptions */
             /* 724A + 3414 bytes */
-            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x117140, 0x11724A, 133, 3414);
+            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.JobDesc_OffAdd, ac.JobDesc_Add + ac.JobDesc_IniOff, ac.JobDesc_NRec, ac.JobDesc_AvailB);
         }
 
 
@@ -3920,7 +3800,7 @@ namespace FF5e_Text_Editor
 
             /* Areas */
             /* 0000 + 2304 bytes */
-            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector1bpp, 0x107000, 0x270000, 164, 2304, false);
+            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector1bpp, ac.Locations_OffAdd, ac.Locations_Add + ac.Locations_IniOff, ac.Locations_NRec, ac.Locations_AvailB, false);
         }
 
 
@@ -3936,7 +3816,7 @@ namespace FF5e_Text_Editor
 
             /* Concepts */
             /* 2F00 + 1632 bytes */
-            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x00F987, 0x272F00, 139, 1632);
+            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.ConceptsV_OffAdd, ac.ConceptsV_Add + ac.ConceptsV_IniOff, ac.ConceptsV_NRec, ac.ConceptsV_AvailB);
         }
 
 
@@ -3947,7 +3827,7 @@ namespace FF5e_Text_Editor
 
             /* Speech */
             /* 0xE10000 + 0x060000 bytes */
-            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector1bpp, 0x2013F0, 0x210000, 2160, 0x050000, true, 0x00, true);
+            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector1bpp, ac.Speech_OffAdd, ac.Speech_Add + ac.Speech_IniOff, ac.Speech_NRec, ac.Speech_AvailB, true, 0x00, ac.SpeechPtrs);
         }
 
 
@@ -3980,9 +3860,9 @@ namespace FF5e_Text_Editor
 
             try
             {
-                br.BaseStream.Position = 0x11F000 + headerOffset;
+                br.BaseStream.Position = ac.Font2BPP_Addr + headerOffset;
 
-                for (int i = 0; i < 0x001000; i++)
+                for (int i = 0; i < ac.Font2BPP_Size; i++)
                 {
                     byteMap.Add((Byte)br.BaseStream.ReadByte());
                 }
@@ -4023,9 +3903,9 @@ namespace FF5e_Text_Editor
 
             try
             {
-                br.BaseStream.Position = 0x03EB00 + headerOffset;
+                br.BaseStream.Position = ac.Font1BPP_Add0 + headerOffset;
 
-                for (int i = 0 ; i < 0x0012C0 ; i++)
+                for (int i = 0 ; i < ac.Font1BPP_Size; i++)
                 {
                     byteMap.Add((Byte)br.BaseStream.ReadByte());
                 }
@@ -4067,9 +3947,9 @@ namespace FF5e_Text_Editor
 
             try
             {
-                br.BaseStream.Position = 0x203724 + headerOffset;
+                br.BaseStream.Position = ac.Font1BPP_Add1 + headerOffset;
 
-                for (int i = 0; i < 0x001380; i++)
+                for (int i = 0; i < ac.Font1BPP_Siz1; i++)
                 {
                     byteMap.Add((Byte)br.BaseStream.ReadByte());
                 }
@@ -4111,9 +3991,9 @@ namespace FF5e_Text_Editor
 
             try
             {
-                br.BaseStream.Position = 0x149E20 + headerOffset;
+                br.BaseStream.Position = ac.FontDama_Addr + headerOffset;
 
-                for (int i = 0; i < 0x000180; i++)
+                for (int i = 0; i < ac.FontDama_Size; i++)
                 {
                     byteMap.Add((Byte)br.BaseStream.ReadByte());
                 }
@@ -4126,7 +4006,7 @@ namespace FF5e_Text_Editor
             br.Close();
             fs.Close();
 
-            Bitmap newBitmap = Transformations.transform3bpp(byteMap, 0, 0x000180);
+            Bitmap newBitmap = Transformations.transform3bpp(byteMap, 0, ac.FontDama_Size);
 
             ManageBMP.exportBPM("3bpp Damage Font", newBitmap, Palettes.palette3b);
 
@@ -4155,9 +4035,9 @@ namespace FF5e_Text_Editor
 
             try
             {
-                br.BaseStream.Position = 0x0000D380 + headerOffset;
+                br.BaseStream.Position = ac.FontOther_Addr + headerOffset;
 
-                for (int i = 0; i < 0x000600; i++)
+                for (int i = 0; i < ac.FontOther_Size; i++)
                 {
                     byteMap.Add((Byte)br.BaseStream.ReadByte());
                 }
@@ -4170,7 +4050,7 @@ namespace FF5e_Text_Editor
             br.Close();
             fs.Close();
 
-            Bitmap newBitmap = Transformations.transform4b(byteMap, 0, 0x000600);
+            Bitmap newBitmap = Transformations.transform4b(byteMap, 0, ac.FontOther_Size);
 
             ManageBMP.exportBPM("4bpp Other Font", newBitmap, Palettes.palette4b);
 
@@ -4299,12 +4179,12 @@ namespace FF5e_Text_Editor
             /* Offset 0x149E20 */
             /* Size   0x000180 */
 
-            List<Byte> newBytes = ManageBMP.importBPM(0x0200, 3);
+            List<Byte> newBytes = ManageBMP.importBPM(ac.FontDama_Size + 0x80, 3); //TODO calc right size
 
             if (newBytes.Count == 0)
                 return;
 
-            injectOn(new List<List<Byte>>() { newBytes }, 0x149E20);
+            injectOn(new List<List<Byte>>() { newBytes }, ac.FontDama_Addr);
         }
 
 
@@ -4315,12 +4195,12 @@ namespace FF5e_Text_Editor
             /* Offset 0x00D380 */
             /* Size   0x000600 */
 
-            List<Byte> newBytes = ManageBMP.importBPM(0x0600, 4);
+            List<Byte> newBytes = ManageBMP.importBPM(ac.FontOther_Size, 4);
 
             if (newBytes.Count == 0)
                 return;
 
-            injectOn(new List<List<Byte>>() { newBytes }, 0x00D380);
+            injectOn(new List<List<Byte>>() { newBytes }, ac.FontOther_Addr);
         }
 
 
@@ -4452,7 +4332,7 @@ namespace FF5e_Text_Editor
 
             try
             {
-                int table = (comboBox1bppFont.SelectedIndex < 1) ? 0x203225 : 0x203325;
+                int table = (comboBox1bppFont.SelectedIndex < 1) ? ac.F1BPPWid_Add0 : ac.F1BPPWid_Add1;
                 bw.BaseStream.Position = table + headerOffset;
 
                 for (int i = 0; i < 16; i++)
@@ -5186,7 +5066,7 @@ namespace FF5e_Text_Editor
 
             inputStr.Add(textBoxMiscTextDefense.Text);
 
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x203103, 1, 10, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Misc_DefenseAdd, 1, ac.Misc_DefenseSize, 0xFF);
         }
 
 
@@ -5197,7 +5077,7 @@ namespace FF5e_Text_Editor
 
             inputStr.Add(textBoxMiscTextDef.Text);
 
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x20310E, 1, 4, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Misc_DefAdd, 1, ac.Misc_DefSize, 0xFF);
         }
 
 
@@ -5208,7 +5088,7 @@ namespace FF5e_Text_Editor
 
             inputStr.Add(textBoxMiscTextEqp.Text);
 
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x203113, 1, 4, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Misc_EqpAdd, 1, ac.Misc_EqpSize, 0xFF);
         }
 
 
@@ -5219,7 +5099,7 @@ namespace FF5e_Text_Editor
 
             inputStr.Add(textBoxMiscTextEmpty.Text);
 
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x203118, 1, 5, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Misc_EmptyAdd, 1, ac.Misc_EmptySize, 0xFF);
         }
 
 
@@ -5230,7 +5110,7 @@ namespace FF5e_Text_Editor
 
             inputStr.Add(textBoxMiscTextMaster.Text);
 
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x00EA6C, 1, 7, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Misc_MasterAdd, 1, ac.Misc_MasterSize, 0xFF);
         }
 
 
@@ -5241,7 +5121,7 @@ namespace FF5e_Text_Editor
 
             inputStr.Add(textBoxMiscTextAny.Text);
 
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x00F7A8, 1, 4, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Misc_AnyAdd, 1, ac.Misc_AnySize, 0xFF);
         }
 
 
@@ -5252,7 +5132,7 @@ namespace FF5e_Text_Editor
 
             inputStr.Add(textBoxMiscTextPause.Text);
 
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x0115C4, 1, 5, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Misc_PauseAdd, 1, ac.Misc_PauseSize, 0xFF);
         }
 
 
@@ -5263,7 +5143,7 @@ namespace FF5e_Text_Editor
 
             inputStr.Add(textBoxMiscTextLv.Text);
 
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x00EA74, 1, 2, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Misc_LvAdd, 1, ac.Misc_LvSize, 0xFF);
         }
 
 
@@ -5274,7 +5154,7 @@ namespace FF5e_Text_Editor
 
             inputStr.Add(textBoxMiscTextUsesMP.Text);
 
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x0EFFBC, 1, 6, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Misc_UsesMPAdd, 1, ac.Misc_UsesMPSize, 0xFF);
         }
 
 
@@ -5290,15 +5170,15 @@ namespace FF5e_Text_Editor
             */
 
             inputStr.Add(textBoxMiscTextHP.Text);
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x10E181, 1, 2, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Misc_HPAdd, 1, ac.Misc_HPSize, 0xFF);
 
             inputStr.Clear();
             inputStr.Add(textBoxMiscTextMP.Text);
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x10E189, 1, 2, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Misc_MPAdd, 1, ac.Misc_MPSize, 0xFF);
 
             inputStr.Clear();
             inputStr.Add(textBoxMiscTextExp.Text);
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x10E191, 1, 3, 0xFF);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Misc_EXPAdd, 1, ac.Misc_EXPSize, 0xFF);
         }
 
 
@@ -5309,7 +5189,7 @@ namespace FF5e_Text_Editor
 
             inputStr.Add(textBoxMiscTextSell.Text);
 
-            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, 0x00FAA0, 1, 3, 0x00);
+            ImportFixedSizeTable(inputStr, tblManager.TBL_Injector2bpp, ac.Misc_SellAdd, 1, ac.Misc_SellSize, 0x00);
 
         }
 
@@ -6068,7 +5948,7 @@ namespace FF5e_Text_Editor
         {
             String message = "Speech ids which may break the speech display window:\r\n";
 
-            for (int value = 0; value < 2160; value++)
+            for (int value = 0; value < ac.Speech_NRec; value++)
             {
                 int[] maxWidth = {0, 0, 0, 0};
                 int   width = 0;
@@ -6276,20 +6156,19 @@ namespace FF5e_Text_Editor
             }
 
             /* Check overflow */
-            if (newByteLs.Count > 1416)
+            if (newByteLs.Count > ac.PoemOfLight_AvailB)
             {
                 /* Overflow */
                 MessageBox.Show("The file is too big:\r\n\r\nThe file is " + newByteLs.Count +
-                                " bytes long.\r\n1416 bytes long were expected.",
+                                " bytes long.\r\n" + ac.PoemOfLight_AvailB + " bytes long were expected.",
                                 "Invalid file");
                 return;
             }
             else
             {
                 MessageBox.Show("The file is ok:\r\n\r\nThe file is " + newByteLs.Count +
-                                " bytes long.\r\nLess than 1416 bytes long were expected.",
+                                " bytes long.\r\nLess than " + ac.PoemOfLight_AvailB + " bytes long were expected.",
                                 "Sucessfully parsed!");
-
             }
 
             /* Everything OK. Inject data. */
@@ -6305,14 +6184,14 @@ namespace FF5e_Text_Editor
 
             try
             {
-                bw.BaseStream.Position = 0x2773A0 + headerOffset;
+                bw.BaseStream.Position = ac.PoemOfLight_Add + headerOffset;
 
                 foreach (Byte item in newByteLs)
                 {
                     bw.BaseStream.WriteByte(item);
                 }
 
-                while (bw.BaseStream.Position != 0x2773A0 + 1416)
+                while (bw.BaseStream.Position != ac.PoemOfLight_Add + ac.PoemOfLight_AvailB)
                 {
                     bw.BaseStream.WriteByte(00);
                 }
@@ -6451,7 +6330,7 @@ namespace FF5e_Text_Editor
 
             outputMessage += "Developed by Noisecross:";
             outputMessage += "\r\n";
-            outputMessage += "Ver. v1.07 (April 2024)";
+            outputMessage += "Ver. v1.08 (May 2024)";
             outputMessage += "\r\n";
             outputMessage += "\r\n";
             outputMessage += "This tool is not under any kind of support, but for any questions please read the readme.docx file or contact the developer by email (dalastnecromancer@gmail.com)";
@@ -6762,15 +6641,15 @@ namespace FF5e_Text_Editor
             System.IO.FileStream fs = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
             System.IO.BinaryReader br = new System.IO.BinaryReader(fs, new UnicodeEncoding());
 
-            br.BaseStream.Position = 0x00F987 + headerOffset;
-            for (int i = 0; i < 139; i++)
+            br.BaseStream.Position = ac.ConceptsV_OffAdd + headerOffset;
+            for (int i = 0; i < ac.ConceptsV_NRec; i++)
             {
                 addresses.Add(br.ReadByte() + br.ReadByte() * 0x0100);
             }
             foreach (int item in addresses)
             {
                 List<Byte> newConcept = new List<Byte>();
-                br.BaseStream.Position = 0x270000 + item + headerOffset;
+                br.BaseStream.Position = ac.ConceptsV_Add + item + headerOffset;
 
                 Byte newByte;
                 while((newByte = br.ReadByte())!= 0x00 ){
@@ -6941,8 +6820,5 @@ namespace FF5e_Text_Editor
         {
             Dummy.createIpsFromCSV(72, 8, 0x260000, tblManager.TBL_Injector1bpp);
         }
-
-
-        
     }
 }
