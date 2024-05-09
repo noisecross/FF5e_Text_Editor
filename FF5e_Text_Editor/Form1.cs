@@ -3,11 +3,12 @@
 * | FF5e_Text_editor                         |
 * | File: Form1.cs                           |
 * | v1.06, November 2015                     |
+* | v1.08,      May 2024                     |
 * | Author: noisecross                       |
 * |------------------------------------------|
 * 
 * @author noisecross
-* @version 1.06
+* @version 1.08
 * 
 */
 
@@ -88,7 +89,7 @@ namespace FF5e_Text_Editor
         Bitmap       speechBmDisplay = FF5e_Text_Editor.Properties.Resources.SpeechWindow;
         Bitmap[]     windowsBmp      = new Bitmap[3];
 
-        List<int> speechPtr = new List<int>();
+        //List<int> speechPtr = new List<int>();
         List<List<Byte>> speech = new List<List<byte>>();
 
         TBL_Manager tblManager;
@@ -256,19 +257,34 @@ namespace FF5e_Text_Editor
             if (tblManager.TBL_Injector1bpp.TryGetValue(")", out newChar)) bartz.Add(newChar);
 
             /* Reset speech */
-            speechPtr.Clear();
+            List<int> pointers = new List<int>();
             speech.Clear();
 
             /* Read Speech */
             br.BaseStream.Position = ac.Speech_OffAdd + headerOffset;
 
-            for (int i = 0; i < ac.Speech_NRec; i++)
+            if (ac.SpeechPtrs)
+                for (int i = 0; i < ac.Speech_NRec; i++)
+                {
+                    int newPtr = br.ReadByte() + br.ReadByte() * 0x0100 + (br.ReadByte() - 0xC0) * 0x010000;
+                    pointers.Add(newPtr);
+                }
+            else
             {
-                int newPtr = br.ReadByte() + br.ReadByte() * 0x0100 + (br.ReadByte() - 0xC0) * 0x010000;
-                speechPtr.Add(newPtr);
+                int bankOffset = ac.Speech_Add;
+                int lastOffset = 0x0000;
+                for (int i = 0; i < ac.Speech_NRec; i++)
+                {
+                    int newOffset = br.ReadByte() + br.ReadByte() * 0x0100;
+                    if (newOffset < lastOffset)
+                        bankOffset += 0x010000;
+                    int newPtr = newOffset + bankOffset;
+                    lastOffset = newOffset;
+                    pointers.Add(newPtr);
+                }
             }
 
-            foreach (int item in speechPtr)
+            foreach (int item in pointers)
             {
                 List<Byte> newRegister = new List<byte>();
                 br.BaseStream.Position = item;
@@ -290,6 +306,9 @@ namespace FF5e_Text_Editor
 
                 speech.Add(newRegister);
             }
+
+            if (speech.Count > 0)
+                numericUpDownIdSpeech.Maximum = speech.Count - 1;
         }
 
 
@@ -341,7 +360,6 @@ namespace FF5e_Text_Editor
                     fileSize = br.BaseStream.Length;
 
                     /* Reset speech */
-                    speechPtr.Clear();
                     speech.Clear();
 
                     /* Load font */
@@ -796,17 +814,27 @@ namespace FF5e_Text_Editor
 
                 br.BaseStream.Position = headerOffset + offsetsAdress;
 
-                if (speech)
+                if (speech && ac.SpeechPtrs)
                     for (int i = 0; i < nRegisters; i++)
                         offsets.Add(br.ReadByte() + 0x000100 * br.ReadByte() + 0x010000 * br.ReadByte());
                 else
                     for (int i = 0; i < nRegisters; i++)
                         offsets.Add(br.ReadByte() + 0x0100 * br.ReadByte());
 
+                int lastOffset = 0x0000;
                 foreach (int item in offsets)
                 {
                     if (speech)
-                        br.BaseStream.Position = headerOffset + item - 0xC00000;
+                        if(ac.SpeechPtrs)
+                            br.BaseStream.Position = headerOffset + item - 0xC00000;
+                        else
+                        {
+                            if (item < lastOffset)
+                                address += 0x010000;
+
+                            lastOffset = item;
+                            br.BaseStream.Position = address + headerOffset + item;
+                        }
                     else
                         br.BaseStream.Position = address + headerOffset + item; 
                     
@@ -1333,13 +1361,11 @@ namespace FF5e_Text_Editor
                 if(ac.EnableRPGeFixes)
                     fixRPGeSpeechASM(bw);
 
-                /* Get sizes */
-                List<Byte> sizes = new List<byte>();
+                /* Get widths */
+                List<Byte> widths = new List<byte>();
                 bw.BaseStream.Position = ac.F1BPPWid_Add0 + headerOffset;
                 for (int k = 0; k < 0x0100; k++)
-                {
-                    sizes.Add(BitConverter.GetBytes(bw.BaseStream.ReadByte())[0]);
-                }
+                    widths.Add(BitConverter.GetBytes(bw.BaseStream.ReadByte())[0]);
 
                 /* Write offsets */
                 int position  = initialAddress;
@@ -1349,17 +1375,27 @@ namespace FF5e_Text_Editor
 
                 for (int i = 0; i < input.Count; i++)
                 {
-                    input[i] = sanityEOLs(input[i], sizes);
+                    input[i] = sanityEOLs(input[i], widths);
                     increment = input[i].Count;
 
                     if (BitConverter.GetBytes(position)[2] != BitConverter.GetBytes(position + increment)[2])
-                    {
                         position = BitConverter.GetBytes(position + increment)[2] * 0x010000;
+
+                    if (ac.SpeechPtrs)
+                    {
+                        //RPGe type
+                        bw.BaseStream.WriteByte(BitConverter.GetBytes(position)[0]);
+                        bw.BaseStream.WriteByte(BitConverter.GetBytes(position)[1]);
+                        bw.BaseStream.WriteByte((Byte)(BitConverter.GetBytes(position)[2] + 0xC0));
+                    }
+                    else
+                    {
+                        //FF5r type
+                        int newPosition = (position - ac.Speech_Add) + ac.Speech_IniOff;
+                        bw.BaseStream.WriteByte(BitConverter.GetBytes(newPosition)[0]);
+                        bw.BaseStream.WriteByte(BitConverter.GetBytes(newPosition)[1]);
                     }
 
-                    bw.BaseStream.WriteByte(BitConverter.GetBytes(position)[0]);
-                    bw.BaseStream.WriteByte(BitConverter.GetBytes(position)[1]);
-                    bw.BaseStream.WriteByte((Byte)(BitConverter.GetBytes(position)[2] + 0xC0));
                     offsets.Add(position);
 
                     position += increment;
@@ -1376,11 +1412,13 @@ namespace FF5e_Text_Editor
 
                 bw.Close();
 
-                System.IO.FileStream fs2 = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open);
-                System.IO.BinaryReader br = new System.IO.BinaryReader(fs2, new UnicodeEncoding());
-                loadSpeech(br);
-
-                br.Close();
+                using (System.IO.FileStream fs2 = new System.IO.FileStream(fileUnderEdition, System.IO.FileMode.Open))
+                {
+                    using (System.IO.BinaryReader br = new System.IO.BinaryReader(fs2, new UnicodeEncoding()))
+                    {
+                        loadSpeech(br);
+                    }
+                }
             }
             catch (Exception e)
             {
@@ -2613,7 +2651,7 @@ namespace FF5e_Text_Editor
             /* 21/0000 + 393216 bytes */
             /* Take care about the last bytes of every bank. A speech cannot be splited */
 
-            output = appendToExportList(output, tblManager.TBL_Reader1bpp, ac.Speech_OffAdd, ac.Speech_Add, ac.Speech_NRec, 0x00, ac.SpeechPtrs);
+            output = appendToExportList(output, tblManager.TBL_Reader1bpp, ac.Speech_OffAdd, ac.Speech_Add, ac.Speech_NRec, 0x00, true);
 
             if (output.Count == ac.Speech_NRec)
             {
@@ -2632,7 +2670,7 @@ namespace FF5e_Text_Editor
             /* Speech */
             /* 21/0000 + 393216 bytes */
             /* Take care about the last bytes of every bank. A speech cannot be splited */
-            list = appendToExportList(list, tblManager.TBL_Reader1bpp, ac.Speech_OffAdd, ac.Speech_Add, ac.Speech_NRec, 0x00, ac.SpeechPtrs);
+            list = appendToExportList(list, tblManager.TBL_Reader1bpp, ac.Speech_OffAdd, ac.Speech_Add, ac.Speech_NRec, 0x00, true);
             current = list[currentValue];
             current = current.Replace(tblManager.TBL_Reader1bpp[0x01], "\r\n");
 
@@ -2646,7 +2684,7 @@ namespace FF5e_Text_Editor
                 list[(int)numericUpDownIdSpeech.Value] = current;
                 /* Speech */
                 /* 0xE10000 + 0x060000 bytes */
-                ImportVariableSizeTable(list, tblManager.TBL_Injector1bpp, ac.Speech_OffAdd, ac.Speech_Add, ac.Speech_NRec, ac.Speech_AvailB, true, 0x00, ac.SpeechPtrs, true);
+                ImportVariableSizeTable(list, tblManager.TBL_Injector1bpp, ac.Speech_OffAdd, ac.Speech_Add, ac.Speech_NRec, ac.Speech_AvailB, true, 0x00, true, true);
 
                 numericUpDownIdSpeech_ValueChanged(null, null);
                 panelMainSpeech.Refresh();
@@ -3827,7 +3865,7 @@ namespace FF5e_Text_Editor
 
             /* Speech */
             /* 0xE10000 + 0x060000 bytes */
-            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector1bpp, ac.Speech_OffAdd, ac.Speech_Add + ac.Speech_IniOff, ac.Speech_NRec, ac.Speech_AvailB, true, 0x00, ac.SpeechPtrs);
+            ImportVariableSizeTable(inputStr, tblManager.TBL_Injector1bpp, ac.Speech_OffAdd, ac.Speech_Add + ac.Speech_IniOff, ac.Speech_NRec, ac.Speech_AvailB, true, 0x00, true);
         }
 
 
