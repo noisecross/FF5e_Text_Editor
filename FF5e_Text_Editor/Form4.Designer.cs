@@ -72,9 +72,9 @@
             this.comboBoxCompressionType.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
             this.comboBoxCompressionType.FormattingEnabled = true;
             this.comboBoxCompressionType.Items.AddRange(new object[] {
-            "Type 00",
-            "Type 01",
-            "Type 02"});
+            "00 None",
+            "01 RLE",
+            "02 LZSS"});
             this.comboBoxCompressionType.Location = new System.Drawing.Point(87, 18);
             this.comboBoxCompressionType.Name = "comboBoxCompressionType";
             this.comboBoxCompressionType.Size = new System.Drawing.Size(79, 21);

@@ -4,11 +4,12 @@
 * | File: Form1.cs                           |
 * | v1.06, November 2015                     |
 * | v1.08,      May 2024                     |
+* | v1.09, December 2024                     |
 * | Author: noisecross                       |
 * |------------------------------------------|
 * 
 * @author noisecross
-* @version 1.08
+* @version 1.09
 * 
 */
 
@@ -80,8 +81,9 @@ namespace FF5e_Text_Editor
         const string windowName      = "FF5e_Text_Editor";
         int          headerOffset    = 0;
 
-        Bitmap       font1bppBitmap  = new Bitmap(1,1);
-        Bitmap       font1bppBitmapW = new Bitmap(1,1);
+        Bitmap       font1bppBitmap  = new Bitmap(1, 1);
+        Bitmap       font1bppBitmap2 = new Bitmap(1, 1);
+        Bitmap       font1bppBitmapW = new Bitmap(1, 1);
         Bitmap[]     font1bppChars   = new Bitmap[256];
         Bitmap       font2bppBitmap  = new Bitmap(1, 1);
         Bitmap[]     font2bppChars   = new Bitmap[256];
@@ -137,10 +139,14 @@ namespace FF5e_Text_Editor
             comboBoxWinGrouping.SelectedIndex = 0;
             comboBox1bppFont.SelectedIndex = 0;
 
+            textBoxSpeech.Enabled = false;
+            buttonImportSubSpeech.Enabled = false;
+
             tabControl1.TabPages[4].Dispose();
             label2.Dispose();
             buttonBugFixChecksum.Dispose();
             buttonDummy.Dispose();
+            buttonEditSpeech.Dispose();
 
             windowsBmp[0] = new Bitmap(256, 256);
             windowsBmp[1] = new Bitmap(256, 256);
@@ -195,6 +201,20 @@ namespace FF5e_Text_Editor
                 byteMap.Add((Byte)br.BaseStream.ReadByte());
             }
             font1bppBitmap = Transformations.transform1bpp(byteMap, 0, ac.Font1BPP_Size);
+
+            //Calc font1bppBitmap2 (256 x 158)
+            font1bppBitmap2 = new Bitmap(256, 158);
+            using (Graphics g = Graphics.FromImage(font1bppBitmap2))
+            {
+                for (int j = 0; j < 12; j++)
+                {
+                    Rectangle cloneRect0 = new Rectangle(0, j * 24, 128, 12);
+                    Rectangle cloneRect1 = new Rectangle(0, 12 + j * 24, 128, 12);
+                    g.DrawImage(font1bppBitmap.Clone(cloneRect0, font1bppBitmap.PixelFormat), new PointF(  0, j * 12));
+                    g.DrawImage(font1bppBitmap.Clone(cloneRect1, font1bppBitmap.PixelFormat), new PointF(128, j * 12));
+                }
+                g.DrawImage(font1bppBitmap.Clone(new Rectangle(0, 288, 128, 12), font1bppBitmap.PixelFormat), new PointF(0, 144));
+            }
         }
 
 
@@ -414,15 +434,18 @@ namespace FF5e_Text_Editor
                     {
                         MessageBox.Show("Error loading the file: " + error.ToString(), "Error");
                     }
+                    fileToEditIsAvailable = false;
                     numericUpDownIdSpeech.Value = 0;
                     comboBoxSubSpeech.SelectedIndex = 0;
+                    fileToEditIsAvailable = true;
                 }
             }
 
             if (fileToEditIsAvailable && fileSize > 0x200000)
             {
-                /* Load misc texts */
+                /* Load remaining texts */
                 loadMiscTexts();
+                textBoxSpeechRefresh();
             }
         }
 
@@ -430,7 +453,7 @@ namespace FF5e_Text_Editor
 
         private Bitmap generateWidthsPreview()
         {
-            Bitmap fonts1bppWidths = new Bitmap(128, 300);
+            Bitmap fonts1bppWidths = new Bitmap(256, 158);
             fonts1bppWidths.MakeTransparent();
 
             Pen semiTransPen = new Pen(Color.FromArgb(0x80, 0xFF, 0xFF, 0xFF), 1);
@@ -438,11 +461,12 @@ namespace FF5e_Text_Editor
             using (Graphics g = Graphics.FromImage(fonts1bppWidths))
             {
                 int k = 0x20;
-                for (int j = 0; j < 25; j++)
+                for (int j = 0; j < 13; j++)
                 {
-                    for (int i = 0; i < 8; i++)
+                    for (int i = 0; i < 16; i++)
                     {
                         Byte x = Byte.Parse(listViewTextWidths.Items[(k / 16) % 16].SubItems[(k % 16) + 1].Text, System.Globalization.NumberStyles.HexNumber);
+
                         g.DrawLine(semiTransPen, 16 * i + x, j * 12, 16 * i + x, 12 + j * 12);
                         k++;
                     }
@@ -675,6 +699,7 @@ namespace FF5e_Text_Editor
                     {
                         syntaxError = true;
                         syntaxErrors += "The register " + item + " cannot be parsed\r\n";
+                        syntaxErrors += "String or character '" + currentString + "' not found\r\n";
                         nErrorCount++;
                         break;
                     }
@@ -4402,9 +4427,9 @@ namespace FF5e_Text_Editor
         private void panelFonts_Paint(object sender, PaintEventArgs e)
         {
             e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
-            e.Graphics.DrawImage(font1bppBitmap, 1, 1, 128, 300);
+            e.Graphics.DrawImage(font1bppBitmap2, 1, 1, 256, 150);
             if(checkBoxShowWidths.Checked)
-                e.Graphics.DrawImage(font1bppBitmapW, 1, 1, 128, 300);
+                e.Graphics.DrawImage(font1bppBitmapW, 1, 1, 256, 150);
         }
 
 
@@ -5968,7 +5993,66 @@ namespace FF5e_Text_Editor
                 return;
 
             panelMainSpeech.Refresh();
+            textBoxSpeechRefresh();
         }
+
+        private void textBoxSpeechRefresh()
+        {
+            if (!fileToEditIsAvailable)
+                return;
+
+            List<String> list = new List<String>();
+            String current = "";
+            int currentValue = (int)numericUpDownIdSpeech.Value;
+
+            /* Speech */
+            /* 21/0000 + 393216 bytes */
+            /* Take care about the last bytes of every bank. A speech cannot be splited */
+            list = appendToExportList(list, tblManager.TBL_Reader1bpp, ac.Speech_OffAdd, ac.Speech_Add, ac.Speech_NRec, 0x00, true);
+            current = list[currentValue];
+            current = current.Replace(tblManager.TBL_Reader1bpp[0x01], "\r\n");
+
+            textBoxSpeech.Text = current;
+        }
+
+        private void tabControl_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if(tabControl1.SelectedIndex == 1)
+            {
+                textBoxSpeech.Enabled = true;
+                buttonImportSubSpeech.Enabled = true;
+            }
+            else
+            {
+                textBoxSpeech.Enabled = false;
+                buttonImportSubSpeech.Enabled = false;
+            }
+        }
+
+
+        private void buttonImportSubSpeech_Click(object sender, EventArgs e)
+        {
+            List<String> list = new List<String>();
+            String current = "";
+            int currentValue = (int)numericUpDownIdSpeech.Value;
+
+            /* Speech */
+            /* 21/0000 + 393216 bytes */
+            /* Take care about the last bytes of every bank. A speech cannot be splited */
+            list = appendToExportList(list, tblManager.TBL_Reader1bpp, ac.Speech_OffAdd, ac.Speech_Add, ac.Speech_NRec, 0x00, true);
+
+            current = textBoxSpeech.Text;
+            current = current.Replace("\r\n", tblManager.TBL_Reader1bpp[0x01]);
+            list[currentValue] = current;
+
+            /* Speech */
+            /* 0xE10000 + 0x060000 bytes */
+            ImportVariableSizeTable(list, tblManager.TBL_Injector1bpp, ac.Speech_OffAdd, ac.Speech_Add, ac.Speech_NRec, ac.Speech_AvailB, true, 0x00, true, true);
+
+            numericUpDownIdSpeech_ValueChanged(null, null);
+            panelMainSpeech.Refresh();
+        }
+
 
 
 
@@ -6368,7 +6452,7 @@ namespace FF5e_Text_Editor
 
             outputMessage += "Developed by Noisecross:";
             outputMessage += "\r\n";
-            outputMessage += "Ver. v1.08 (May 2024)";
+            outputMessage += "Ver. v1.09 (December 2024)";
             outputMessage += "\r\n";
             outputMessage += "\r\n";
             outputMessage += "This tool is not under any kind of support, but for any questions please read the readme.docx file or contact the developer by email (dalastnecromancer@gmail.com)";
